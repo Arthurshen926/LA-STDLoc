@@ -1,0 +1,49 @@
+Method写作接口与实现依据
+
+3.1 输入输出
+  G + C={(K,R,t)}；X,d为在线地图，T,q,Sigma为离线证据。
+  参考相机固定；query只有输入RGB/内参，待估pose。
+
+3.2 构造
+  a. 完整rendered RGB提特征后过滤：RGB structure、opacity、depth与边界。
+     anygsloc/mapping/v2_filtered_observations.py
+     anygsloc/mapping/render_observations.py
+  b. 稀疏相机邻接图的reciprocal descriptor + epipolar matching；cycle/chain组轨。
+     同相机不同keypoint不能进入同一track。
+     unused valid observations经depth lifting/voxel grouping寻找增补关联，仍进行匹配验证。
+     anygsloc/mapping/projective_association.py
+     anygsloc/mapping/projective_completion.py
+     anygsloc/mapping/triangulation.py: reciprocal_epipolar_matches / build_cycle_consistent_tracks
+  c. 置信度排序最多32观测，初次weighted-ray solve + 3次Huber(2px)重加权。
+     正深度/至少3视图，camera pose固定；不写joint BA或精确reprojection最小化。
+     robust_triangulate_associations默认surface_support_enabled=False；不要把开发分支选项写成主线。
+     融合使用全部轨迹观测；最多8相机组，组内权重归一化，medoid一致性保留约80%有效组，
+     组间等权平均再归一化，输出256D。正文用group descriptor，避免prototype/equal-group术语。
+     q结合关联、重投影和视差；Sigma由重投影normal matrix局部估计。
+     equations_3_2.tex保留必要目标，不独立证明经典求解器性质。
+
+3.3 选择
+  anygsloc/mapping/compact.py select_compact_rows / selector.py
+  Quality：按q排序，第十分位参考支持达256，每512检测，至少1024点。
+  Coverage：capped support，目标不超过full-map对应支持，camera-group加权。
+  Pose：像素variance4、平移尺度0.05m、旋转5deg、6×6局部信息；含diversity项。
+  最多4096补点、0.5m voxel每格至多3、相对首次接受增益2%停止。
+  anygsloc/mapping/pose_information.py / pose_evidence.py / observability.py
+  选择不改XYZ/descriptor；reference view信息是future-query约束的代理。
+  equations_3_3.tex需与实际权重/尺度/多样性一致，不能省掉diversity后称纯D-optimal。
+
+3.4 在线
+  冻结SuperPoint；全图cosine Top-1，float32/chunk8192；最高65%，可用时至少256对应。
+  PoseLib一次调用，包含内部RANSAC与优化；confidence.999，min250/max30000，seed2026。
+  query特征预算1024–2048与PnP像素阈值依据mapping calibration确定。
+  无Gaussian在线渲染，无独立稠密refinement。
+
+实现细节写法
+  正文保留“为何这样做”和核心公式；数值阈值集中为一个实现段，不散落引言与图面。
+  长稿不受页数约束，可以写全必要实现，但不复制旧稿的谱分解证明、开发分支或审计过程。
+  展开正文时以冻结实验配置与对应代码为最终依据，不只依赖旧稿文字。
+
+3.3 v2末端清理
+  anygsloc/mapping/post_pose_cleanup.py：仅按质量升序移除coverage阶段冗余点。
+  每参考视图保留min(清理开始时独立特征行支持数,256)，保留quality核心与pose新增点。
+  这是Pose-aware completion收尾，不改变单点XYZ/descriptor。

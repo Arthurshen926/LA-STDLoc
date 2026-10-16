@@ -1,0 +1,117 @@
+{
+  "schema": "matcha_limited_14999_preregistration_v1",
+  "status": "implementation_and_micro_cpu_only_input_binding_and_gpu_paused",
+  "native_iterations": 30000,
+  "native_seed": 0,
+  "permitted_resume_cut": 14999,
+  "calibration": {
+    "stage": "native_trial_a_n8",
+    "steps": 8,
+    "launcher": "native_n8_launcher.py",
+    "automatic_later_launches": false
+  },
+  "reference": {
+    "kind": "native_observer_fresh_same_seed",
+    "comparison_trial_a_steps": [
+      1,
+      8
+    ],
+    "end": 15101,
+    "checkpoint_steps": [
+      14999,
+      15101
+    ],
+    "full_digest_steps": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      14999,
+      15101
+    ]
+  },
+  "resume": {
+    "from": 14999,
+    "comparison_start": 15000,
+    "comparison_end": 15101,
+    "training_end": 30000,
+    "full_state_steps": [
+      14999,
+      15101
+    ],
+    "same_process_continuation_only": true,
+    "separate_15101_restart_supported": false
+  },
+  "trajectory_fields": [
+    "selected_pool_index_name",
+    "cadence_at_selection",
+    "cadence_after_step",
+    "both_ordered_sampling_stacks_None_vs_empty",
+    "chart_phase",
+    "all_named_group_LRs",
+    "loss_components_scalar_bit_patterns",
+    "point_count",
+    "active_SH",
+    "evaluation_save_checkpoint_events",
+    "all_visible_CUDA_Torch_CPU_NumPy_Python_RNG_digest"
+  ],
+  "loss_fields": [
+    "Ll1",
+    "dssim",
+    "loss",
+    "normal_loss",
+    "dist_loss",
+    "depth_prior_loss_including_derivative_and_order",
+    "normal_prior_loss",
+    "curv_prior_loss",
+    "total_regularization_loss",
+    "total_loss",
+    "depth_order_prior_loss_if_active",
+    "anisotropy_loss_if_active",
+    "large_splat_loss_inactive",
+    "active_loss_coefficients"
+  ],
+  "endpoint_fields": [
+    "Gaussian_parameters_and_descriptors",
+    "Adam_bindings_steps_moments_groups",
+    "densification_accumulators",
+    "actual_mip",
+    "loop_and_EMAs",
+    "all_RNG",
+    "pipeline",
+    "next_step_LRs",
+    "actual_static_cache_camera_RGB_mask_bytes_digest"
+  ],
+  "tolerance": {
+    "discrete": 0,
+    "numeric": 0,
+    "bytes": 0,
+    "retry_with_relaxed_tolerance": false
+  },
+  "fail_stop": [
+    "missing_step",
+    "missing_loss_component",
+    "missing_reference",
+    "wrong_source_or_input_binding",
+    "wrong14999restored_state",
+    "wrong15101full_state",
+    "first_trajectory_or_RNG_difference",
+    "unreviewed_gate",
+    "unmeasured_budget"
+  ],
+  "claim_limit": "Full byte-state equality at restored14999 and endpoint15101 plus every intermediate step's registered trajectory equality; no claim of every intermediate full-weight equality or arbitrary cut support.",
+  "resource": {
+    "physical_gpu": 0,
+    "visible_devices": 1,
+    "logical_gpu": 0,
+    "actual_driverapi_context_uuid_before_after": true,
+    "total_deadline_seconds": 3500,
+    "forecast_must_be_less_than_seconds": 3380,
+    "second_job_budget_requires_actual14999_evidence": true
+  },
+  "source_input_policy": "No final scientific binding or launch while independent source/input decision is paused. Do not create a placeholder PASS receipt."
+}

@@ -1,0 +1,21 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete input-availability metrics}
+\label{tab:s_input_tails}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & P95 TE & R5 (\%) & R15 (\%) \\
+\midrule
+Reference images / Full & 7.249 / 0.124 & 13.712 & 29.588 & -- & 43.94 & 78.33 \\
+Reference images / Compact & \textbf{7.706} / 0.123 & \textbf{14.404} & \textbf{29.333} & -- & 42.31 & \textbf{76.37} \\
+Gaussian renderings / Full & 7.817 / 0.117 & 21.124 & 29.887 & \textbf{43.907} & 46.95 & 74.54 \\
+Gaussian renderings / Compact & 8.537 / 0.121 & 19.740 & 30.135 & \textbf{45.691} & 44.25 & 73.12 \\
+Both / Full & \textbf{6.567} / \textbf{0.107} & \textbf{12.286} & \textbf{24.211} & -- & \textbf{47.52} & \textbf{81.41} \\
+Both / Compact & 8.282 / \textbf{0.119} & 15.689 & 30.440 & -- & \textbf{45.40} & 73.56 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize TE statistics are in cm. The frozen reports do not provide accuracy P95 for mixed or real-only inputs; these entries remain unreported. Runtime percentiles are not substituted for accuracy percentiles. Bold compares observation sources separately within Full and within Compact.\end{minipage}
+\end{table*}

@@ -1,0 +1,124 @@
+--- /root/MAtCha/2d-gaussian-splatting/train_with_charts.py
++++ /root/STDLoc/experiments/matcha_exact_resume/train_with_charts_exact.py
+@@ -12,6 +12,9 @@
+ import os
+ import sys
+ import json
++sys.path.insert(0, "/root/MAtCha")
++sys.path.insert(0, "/root/MAtCha/2d-gaussian-splatting")
++from exact_resume import Controller, add_arguments
+ from typing import Optional
+ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+@@ -187,7 +190,7 @@
+         loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * dssim
+     else:
+         loss = Ll1
+-    return {"Ll1": Ll1, "loss": loss}
++    return {"Ll1": Ll1, "loss": loss, "dssim": dssim if lambda_dssim > 0.0 else None}
+ 
+ 
+ class PerImageAffineColorCorrection(torch.nn.Module):
+@@ -855,6 +858,7 @@
+     save_log_images = False
+     save_log_images_every_n_iter = 200
+     
++    exact = Controller(args, locals())
+     first_iter = 0
+     tb_writer = prepare_output_and_logger(dataset)
+     gaussians = GaussianModel(dataset.sh_degree)
+@@ -1150,7 +1154,7 @@
+     ema_prior_anisotropy_for_log = 0.0
+     
+     # Set mip filter
+-    if use_mip_filter:
++    if use_mip_filter and not exact.has_resume:
+         print("[INFO] Using mip filter during training.")
+         gaussians.set_mip_filter(use_mip_filter)
+         gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else viewpoint_cams)
+@@ -1352,7 +1356,7 @@
+     print("[INFO] Charts priors built.")
+     
+     dense_depth_priors = None
+-    if use_dense_supervision and dense_regul != "none":
++    if use_dense_supervision and dense_regul != "none" and not exact.has_resume:
+         print("[INFO] Building depth priors from dense data...")
+         # TODO: Build priors from dense data
+         from matcha.pointmap.depthanythingv2 import load_model as load_depthanythingv2
+@@ -1448,10 +1452,42 @@
+             f"with indices {rgb_mask_lookup.mask_indices}"
+         )
+ 
++    restored = exact.prepare(locals())
++    if restored is not None:
++        background = restored["background"]
++        charts_scale_factor = restored["charts_scale_factor"]
++        charts_prior_depths = restored["charts_prior_depths"]
++        charts_depths = restored["charts_depths"]
++        charts_confs = restored["charts_confs"]
++        charts_normals = restored["charts_normals"]
++        charts_curvs = restored["charts_curvs"]
++        chart_prior_weights = restored["chart_prior_weights"]
++        chart_late_prior_weights = restored["chart_late_prior_weights"]
++        chart_regularization_indices = restored["chart_regularization_indices"]
++        chart_late_regularization_indices = restored["chart_late_regularization_indices"]
++        dense_depth_priors = restored["dense_depth_priors"]
++        use_dense_supervision = restored["use_dense_supervision"]
++        use_depth_order_regularization = restored["use_depth_order_regularization"]
++        viewpoint_idx_stack = restored["viewpoint_idx_stack"]
++        dense_viewpoint_idx_stack = restored["dense_viewpoint_idx_stack"]
++        chart_sampling_phase = restored["chart_sampling_phase"]
++        use_chart_view_every_n_iter = restored["use_chart_view_every_n_iter"]
++        ema_loss_for_log = restored["ema_loss_for_log"]
++        ema_dist_for_log = restored["ema_dist_for_log"]
++        ema_normal_for_log = restored["ema_normal_for_log"]
++        ema_prior_depth_for_log = restored["ema_prior_depth_for_log"]
++        ema_prior_normal_for_log = restored["ema_prior_normal_for_log"]
++        ema_prior_curvature_for_log = restored["ema_prior_curvature_for_log"]
++        ema_prior_anisotropy_for_log = restored["ema_prior_anisotropy_for_log"]
++        first_iter = restored["first_iter"]
++        del restored
+     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+     first_iter += 1
++    exact.restore_rng_last()
++    exact.verify_restored_boundary(locals())
+     for iteration in range(first_iter, opt.iterations + 1):        
+ 
++        exact.before_step(iteration)
+         iter_start.record()
+ 
+         gaussians.update_learning_rate(iteration)
+@@ -1485,6 +1521,7 @@
+             viewpoint_idx = dense_viewpoint_idx_stack.pop(randint(0, len(dense_viewpoint_idx_stack)-1))
+             viewpoint_cam = dense_viewpoint_cams[viewpoint_idx]
+         
++        exact.observe_view(locals())
+         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+         
+@@ -1956,10 +1993,17 @@
+             if (iteration in checkpoint_iterations):
+                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
++            if network_gui.conn is not None:
++                raise RuntimeError("exact-resume: live GUI is unsupported")
++            if exact.boundary(locals()):
++                progress_bar.close()
++                break
+ 
+         with torch.no_grad():        
+             if network_gui.conn == None:
+                 network_gui.try_connect(dataset.render_items)
++                if network_gui.conn is not None:
++                    raise RuntimeError("exact-resume: GUI connection refused before render")
+             while network_gui.conn != None:
+                 try:
+                     net_image_bytes = None
+@@ -2258,6 +2302,7 @@
+         default=3001,
+         help="First iteration at which --chart_late_prior_selection_json becomes active.",
+     )
++    add_arguments(parser)
+     args = parser.parse_args(sys.argv[1:])
+     args.save_iterations.append(args.iterations)
+     if args.early_stop_iteration is not None:

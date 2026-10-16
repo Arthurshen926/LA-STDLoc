@@ -1,0 +1,1010 @@
+{
+  "aggregation": "Metrics within each scene, then equal-weight mean over scenes.",
+  "T4": {
+    "STDLoc/sparse": {
+      "per_scene": {
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 13.958988338708878,
+          "median_RE_deg": 0.08292602040421239,
+          "mean_TE_cm": 158.23767066590096,
+          "mean_RE_deg": 0.9042371477137996,
+          "R5_pct": 13.552631578947368
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 15.356044471263885,
+          "median_RE_deg": 0.17111837012255585,
+          "mean_TE_cm": 44.599950918520506,
+          "mean_RE_deg": 0.6161998530411347,
+          "R5_pct": 1.4577259475218658
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 17.710895836353302,
+          "median_RE_deg": 0.35506090065948664,
+          "mean_TE_cm": 32.45254533651929,
+          "mean_RE_deg": 0.5272754807043071,
+          "R5_pct": 1.6483516483516483
+        },
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 3.118225373327732,
+          "median_RE_deg": 0.13876894002693585,
+          "mean_TE_cm": 5.509917048321476,
+          "mean_RE_deg": 0.2626392941417506,
+          "R5_pct": 72.81553398058253
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 5.978348478674889,
+          "median_RE_deg": 0.21485198466676153,
+          "mean_TE_cm": 134.50093290781743,
+          "mean_RE_deg": 3.079302982617756,
+          "R5_pct": 40.18867924528302
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 11.224500499665737,
+        "median_RE_deg": 0.19254524317599045,
+        "mean_TE_cm": 75.06020337541594,
+        "mean_RE_deg": 1.0779309516437496,
+        "R5_pct": 25.932584480137287
+      }
+    },
+    "STDLoc/dense": {
+      "per_scene": {
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 11.456426605582237,
+          "median_RE_deg": 0.059949887691257656,
+          "mean_TE_cm": 244.77970847394317,
+          "mean_RE_deg": 1.30927402795184,
+          "R5_pct": 22.105263157894736
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 15.052106976509094,
+          "median_RE_deg": 0.16089709875133754,
+          "mean_TE_cm": 54.54863306276131,
+          "mean_RE_deg": 1.2685941097997366,
+          "R5_pct": 4.956268221574344
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 12.004749849438667,
+          "median_RE_deg": 0.21574113655847968,
+          "mean_TE_cm": 23.420091830756885,
+          "mean_RE_deg": 0.37174048494575185,
+          "R5_pct": 18.681318681318682
+        },
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.165420353412628,
+          "median_RE_deg": 0.11842156636562985,
+          "mean_TE_cm": 16.927105061782218,
+          "mean_RE_deg": 0.7119761005168724,
+          "R5_pct": 75.72815533980582
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.7431564182043076,
+          "median_RE_deg": 0.1309906285526541,
+          "mean_TE_cm": 1216.0950105078189,
+          "mean_RE_deg": 3.2607963379359974,
+          "R5_pct": 65.66037735849056
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.884372040629387,
+        "median_RE_deg": 0.13720006358387177,
+        "mean_TE_cm": 311.1541097874125,
+        "mean_RE_deg": 1.3844762122300396,
+        "R5_pct": 37.42627655181683
+      }
+    },
+    "ULFLoc/sparse": {
+      "per_scene": {
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 16.63665771484375,
+          "median_RE_deg": 0.08472227010948649,
+          "mean_TE_cm": 85.72394210416333,
+          "mean_RE_deg": 0.5747537171050167,
+          "R5_pct": 7.631578947368421
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.203573882579803,
+          "median_RE_deg": 0.16466010609719145,
+          "mean_TE_cm": 21.173255033139412,
+          "mean_RE_deg": 0.20252202633107094,
+          "R5_pct": 3.206997084548105
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 14.925535023212433,
+          "median_RE_deg": 0.29001551508957424,
+          "mean_TE_cm": 28.773629380860825,
+          "mean_RE_deg": 0.4695932828117512,
+          "R5_pct": 7.6923076923076925
+        },
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 3.7073351442813873,
+          "median_RE_deg": 0.17869409044873136,
+          "mean_TE_cm": 6.347240229110116,
+          "mean_RE_deg": 0.3132865457465506,
+          "R5_pct": 66.99029126213593
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 8.479480817914009,
+          "median_RE_deg": 0.278122114691959,
+          "mean_TE_cm": 728.4749446927465,
+          "mean_RE_deg": 11.631006151225222,
+          "R5_pct": 23.39622641509434
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 12.190516516566277,
+        "median_RE_deg": 0.19924281928738852,
+        "mean_TE_cm": 174.09860228800403,
+        "mean_RE_deg": 2.638232344643922,
+        "R5_pct": 21.783480280290895
+      }
+    },
+    "ULFLoc/dense": {
+      "per_scene": {
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 9.383480623364449,
+          "median_RE_deg": 0.05476320945522592,
+          "mean_TE_cm": 69.97253510120667,
+          "mean_RE_deg": 0.5191385237522163,
+          "R5_pct": 26.57894736842105
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.02679693698883,
+          "median_RE_deg": 0.18597824707471194,
+          "mean_TE_cm": 20.894576152705156,
+          "mean_RE_deg": 0.2064063105179278,
+          "R5_pct": 6.122448979591836
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 8.842957392334938,
+          "median_RE_deg": 0.16195285656599373,
+          "mean_TE_cm": 17.96402978444738,
+          "mean_RE_deg": 0.2875819545341663,
+          "R5_pct": 30.76923076923077
+        },
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.974497340619564,
+          "median_RE_deg": 0.13734501900776008,
+          "mean_TE_cm": 5.920559289928489,
+          "mean_RE_deg": 0.2771379290478024,
+          "R5_pct": 76.69902912621359
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.646436519920826,
+          "median_RE_deg": 0.12269218883492661,
+          "mean_TE_cm": 636.9433563711772,
+          "mean_RE_deg": 10.787030443086302,
+          "R5_pct": 60.943396226415096
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.374833762645721,
+        "median_RE_deg": 0.13254630418772365,
+        "mean_TE_cm": 150.33901133989298,
+        "mean_RE_deg": 2.415459032187683,
+        "R5_pct": 40.22261049397447
+      }
+    },
+    "AnyGSLoc/full": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.0723365247249603,
+          "median_RE_deg": 0.09909420541764989,
+          "mean_TE_cm": 4.561444871507368,
+          "mean_RE_deg": 0.21288967680081786,
+          "R5_pct": 84.46601941747574
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 9.262870997190475,
+          "median_RE_deg": 0.16550582892476315,
+          "mean_TE_cm": 18.24428564050122,
+          "mean_RE_deg": 0.2856732869551398,
+          "R5_pct": 35.16483516483517
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 16.4797306060791,
+          "median_RE_deg": 0.16588967354992595,
+          "mean_TE_cm": 18.7565534171966,
+          "mean_RE_deg": 0.17636990815198028,
+          "R5_pct": 18.950437317784257
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 8.115959540009499,
+          "median_RE_deg": 0.04274637373218783,
+          "mean_TE_cm": 59.13166845205093,
+          "mean_RE_deg": 0.3476637621885747,
+          "R5_pct": 25.394736842105264
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.1555265188217163,
+          "median_RE_deg": 0.11071561554292123,
+          "mean_TE_cm": 4.924245946777035,
+          "mean_RE_deg": 0.15532147211806,
+          "R5_pct": 70.75471698113208
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 7.8172848373651505,
+        "median_RE_deg": 0.11679033943348961,
+        "mean_TE_cm": 21.123639665606632,
+        "mean_RE_deg": 0.23558362124291454,
+        "R5_pct": 46.9461491446665
+      }
+    },
+    "AnyGSLoc/native_compact": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.016928791999817,
+          "median_RE_deg": 0.0916530078016119,
+          "mean_TE_cm": 4.353535386792483,
+          "mean_RE_deg": 0.20460966539367603,
+          "R5_pct": 83.49514563106796
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 10.56637093424797,
+          "median_RE_deg": 0.19255926774215146,
+          "mean_TE_cm": 20.06852809380699,
+          "mean_RE_deg": 0.31508173094999065,
+          "R5_pct": 29.12087912087912
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.399504780769348,
+          "median_RE_deg": 0.15986698082649534,
+          "mean_TE_cm": 18.976235460576877,
+          "mean_RE_deg": 0.17383790013798817,
+          "R5_pct": 16.909620991253643
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 9.333926439285278,
+          "median_RE_deg": 0.0460253297737301,
+          "mean_TE_cm": 49.07703593149659,
+          "mean_RE_deg": 0.30798201357986255,
+          "R5_pct": 23.42105263157895
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.3668087795376778,
+          "median_RE_deg": 0.1132734113303319,
+          "mean_TE_cm": 6.222874991758287,
+          "mean_RE_deg": 0.19055506655827376,
+          "R5_pct": 68.30188679245283
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.536707945168018,
+        "median_RE_deg": 0.12067559949486414,
+        "mean_TE_cm": 19.739641972886247,
+        "mean_RE_deg": 0.23841327532395823,
+        "R5_pct": 44.2497170334465
+      }
+    }
+  },
+  "T6": {
+    "filter_off_single": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.132021449506283,
+          "median_RE_deg": 0.09183702270280555,
+          "mean_TE_cm": 4.883203009658864,
+          "mean_RE_deg": 0.22621204937844705,
+          "R5_pct": 79.6116504854369
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 10.151684284210205,
+          "median_RE_deg": 0.1902332748347514,
+          "mean_TE_cm": 24.39479213668504,
+          "mean_RE_deg": 0.42775201850043826,
+          "R5_pct": 29.67032967032967
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.222198843955994,
+          "median_RE_deg": 0.15269612263141497,
+          "mean_TE_cm": 20.27308041550241,
+          "mean_RE_deg": 0.17802849815757096,
+          "R5_pct": 14.285714285714286
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 10.70001870393753,
+          "median_RE_deg": 0.054969110643738044,
+          "mean_TE_cm": 45.95073301001991,
+          "mean_RE_deg": 0.2954411820247402,
+          "R5_pct": 18.157894736842106
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.752909041941166,
+          "median_RE_deg": 0.12790433687305375,
+          "mean_TE_cm": 6.6859821369432195,
+          "mean_RE_deg": 0.2098384345254949,
+          "R5_pct": 65.84905660377359
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.791766464710236,
+        "median_RE_deg": 0.12352797353715274,
+        "mean_TE_cm": 20.43755814176189,
+        "mean_RE_deg": 0.26745443651733825,
+        "R5_pct": 41.51492915641931
+      }
+    },
+    "filter_on_single": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.0785650238394737,
+          "median_RE_deg": 0.09198107699529068,
+          "mean_TE_cm": 4.791680166895673,
+          "mean_RE_deg": 0.22115532037738977,
+          "R5_pct": 81.55339805825243
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 11.197974905371666,
+          "median_RE_deg": 0.19157171843770282,
+          "mean_TE_cm": 22.603457242475596,
+          "mean_RE_deg": 0.3827516087373365,
+          "R5_pct": 28.021978021978022
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 16.75673872232437,
+          "median_RE_deg": 0.1594180292906992,
+          "mean_TE_cm": 19.34418986869145,
+          "mean_RE_deg": 0.174228012965454,
+          "R5_pct": 12.82798833819242
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 10.818632319569588,
+          "median_RE_deg": 0.05211106167474451,
+          "mean_TE_cm": 42.00701870538882,
+          "mean_RE_deg": 0.30381757764067235,
+          "R5_pct": 18.55263157894737
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.5608340054750443,
+          "median_RE_deg": 0.12630407157528734,
+          "mean_TE_cm": 7.143769477810359,
+          "mean_RE_deg": 0.21033256235042544,
+          "R5_pct": 66.98113207547169
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.882548995316029,
+        "median_RE_deg": 0.12427719159474492,
+        "mean_TE_cm": 19.17802309225238,
+        "mean_RE_deg": 0.2584570164142556,
+        "R5_pct": 41.58742561456839
+      }
+    },
+    "filter_off_fused": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 1.9908348098397255,
+          "median_RE_deg": 0.09660073947345227,
+          "mean_TE_cm": 4.424784038197791,
+          "mean_RE_deg": 0.2090108558919943,
+          "R5_pct": 86.40776699029126
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 9.8705492913723,
+          "median_RE_deg": 0.1940136978289675,
+          "mean_TE_cm": 22.365295035498484,
+          "mean_RE_deg": 0.34314509744900995,
+          "R5_pct": 27.47252747252747
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.688970267772675,
+          "median_RE_deg": 0.15942296516959162,
+          "mean_TE_cm": 19.27557025164496,
+          "mean_RE_deg": 0.1735247780904959,
+          "R5_pct": 16.909620991253643
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 9.734445065259933,
+          "median_RE_deg": 0.046110040127694124,
+          "mean_TE_cm": 26.295640956714603,
+          "mean_RE_deg": 0.17703517581792846,
+          "R5_pct": 22.763157894736842
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.38116642087698,
+          "median_RE_deg": 0.11361472735574081,
+          "mean_TE_cm": 33.86094784733119,
+          "mean_RE_deg": 0.5125105891802526,
+          "R5_pct": 68.11320754716981
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.533193171024323,
+        "median_RE_deg": 0.12195243399108927,
+        "mean_TE_cm": 21.244447625877406,
+        "mean_RE_deg": 0.28304529928593625,
+        "R5_pct": 44.33325617919581
+      }
+    },
+    "filter_on_fused": {
+      "per_scene": {
+        "ShopFacade": {
+          "queries": 103,
+          "median_TE_cm": 2.016928791999817,
+          "median_RE_deg": 0.0916530078016119,
+          "mean_TE_cm": 4.353535386792483,
+          "mean_RE_deg": 0.20460966539367603,
+          "R5_pct": 83.49514563106796
+        },
+        "OldHospital": {
+          "queries": 182,
+          "median_TE_cm": 10.56637093424797,
+          "median_RE_deg": 0.19255926774215146,
+          "mean_TE_cm": 20.06852809380699,
+          "mean_RE_deg": 0.31508173094999065,
+          "R5_pct": 29.12087912087912
+        },
+        "KingsCollege": {
+          "queries": 343,
+          "median_TE_cm": 17.399504780769348,
+          "median_RE_deg": 0.15986698082649534,
+          "mean_TE_cm": 18.976235460576877,
+          "mean_RE_deg": 0.17383790013798817,
+          "R5_pct": 16.909620991253643
+        },
+        "GreatCourt": {
+          "queries": 760,
+          "median_TE_cm": 9.333926439285278,
+          "median_RE_deg": 0.0460253297737301,
+          "mean_TE_cm": 49.07703593149659,
+          "mean_RE_deg": 0.30798201357986255,
+          "R5_pct": 23.42105263157895
+        },
+        "StMarysChurch": {
+          "queries": 530,
+          "median_TE_cm": 3.3668087795376778,
+          "median_RE_deg": 0.1132734113303319,
+          "mean_TE_cm": 6.222874991758287,
+          "mean_RE_deg": 0.19055506655827376,
+          "R5_pct": 68.30188679245283
+        }
+      },
+      "macro": {
+        "queries": 1918,
+        "median_TE_cm": 8.536707945168018,
+        "median_RE_deg": 0.12067559949486414,
+        "mean_TE_cm": 19.739641972886247,
+        "mean_RE_deg": 0.23841327532395823,
+        "R5_pct": 44.2497170334465
+      }
+    }
+  },
+  "indoor": {
+    "7Scenes": {
+      "compact": {
+        "per_scene": {
+          "chess": {
+            "queries": 2000,
+            "median_TE_cm": 0.27112020179629326,
+            "median_RE_deg": 0.0932204028139976,
+            "mean_TE_cm": 0.3781423692526005,
+            "mean_RE_deg": 0.1262301370841282,
+            "R5_pct": 99.95
+          },
+          "fire": {
+            "queries": 2000,
+            "median_TE_cm": 0.5264092702418566,
+            "median_RE_deg": 0.2241382871839484,
+            "mean_TE_cm": 0.8278276815326535,
+            "mean_RE_deg": 0.399557094633336,
+            "R5_pct": 99.35
+          },
+          "heads": {
+            "queries": 1000,
+            "median_TE_cm": 0.3462871420197189,
+            "median_RE_deg": 0.21905165721203346,
+            "mean_TE_cm": 0.6617218436149415,
+            "mean_RE_deg": 0.39297185591553996,
+            "R5_pct": 99.6
+          },
+          "office": {
+            "queries": 4000,
+            "median_TE_cm": 0.5979803623631597,
+            "median_RE_deg": 0.17116085870167008,
+            "mean_TE_cm": 0.7954100178798399,
+            "mean_RE_deg": 0.2297336526291826,
+            "R5_pct": 99.95
+          },
+          "pumpkin": {
+            "queries": 2000,
+            "median_TE_cm": 0.6915788631886244,
+            "median_RE_deg": 0.16560651418406133,
+            "mean_TE_cm": 0.9080912186844217,
+            "mean_RE_deg": 0.22152179434621674,
+            "R5_pct": 99.65
+          },
+          "redkitchen": {
+            "queries": 5000,
+            "median_TE_cm": 0.4068215377628803,
+            "median_RE_deg": 0.11358306435965679,
+            "mean_TE_cm": 0.5943554179191415,
+            "mean_RE_deg": 0.17213754349901436,
+            "R5_pct": 99.76
+          },
+          "stairs": {
+            "queries": 1000,
+            "median_TE_cm": 1.6063345596194267,
+            "median_RE_deg": 0.4789083186089644,
+            "mean_TE_cm": 2.66368606541655,
+            "mean_RE_deg": 0.6577676630734206,
+            "R5_pct": 91.9
+          }
+        },
+        "macro": {
+          "queries": 17000,
+          "median_TE_cm": 0.6352188481417086,
+          "median_RE_deg": 0.2093813004377617,
+          "mean_TE_cm": 0.9756049449000213,
+          "mean_RE_deg": 0.3142742487401198,
+          "R5_pct": 98.59428571428572
+        }
+      },
+      "full": {
+        "per_scene": {
+          "chess": {
+            "queries": 2000,
+            "median_TE_cm": 0.3198454505763948,
+            "median_RE_deg": 0.10502199252916106,
+            "mean_TE_cm": 0.43222470423352205,
+            "mean_RE_deg": 0.1413111556851085,
+            "R5_pct": 99.85
+          },
+          "fire": {
+            "queries": 2000,
+            "median_TE_cm": 0.5739290965721011,
+            "median_RE_deg": 0.23849287687986898,
+            "mean_TE_cm": 1.367776456788124,
+            "mean_RE_deg": 0.9778319412724406,
+            "R5_pct": 98.65
+          },
+          "heads": {
+            "queries": 1000,
+            "median_TE_cm": 0.41953385807573795,
+            "median_RE_deg": 0.24992485264232495,
+            "mean_TE_cm": 0.7506752509390935,
+            "mean_RE_deg": 0.45488550267468675,
+            "R5_pct": 98.8
+          },
+          "office": {
+            "queries": 4000,
+            "median_TE_cm": 0.649652280844748,
+            "median_RE_deg": 0.18589143563716537,
+            "mean_TE_cm": 0.8847858197616005,
+            "mean_RE_deg": 0.2576451787668696,
+            "R5_pct": 99.525
+          },
+          "pumpkin": {
+            "queries": 2000,
+            "median_TE_cm": 0.7453616708517075,
+            "median_RE_deg": 0.17700722715682993,
+            "mean_TE_cm": 1.0025546463293722,
+            "mean_RE_deg": 0.24599813416874464,
+            "R5_pct": 99.0
+          },
+          "redkitchen": {
+            "queries": 5000,
+            "median_TE_cm": 0.43583838269114494,
+            "median_RE_deg": 0.12022276862506287,
+            "mean_TE_cm": 0.7075318410209729,
+            "mean_RE_deg": 0.21275497205819474,
+            "R5_pct": 98.88
+          },
+          "stairs": {
+            "queries": 1000,
+            "median_TE_cm": 1.9530758261680603,
+            "median_RE_deg": 0.5825535844582782,
+            "mean_TE_cm": 3.4537649992853403,
+            "mean_RE_deg": 0.8643476326436415,
+            "R5_pct": 86.1
+          }
+        },
+        "macro": {
+          "queries": 17000,
+          "median_TE_cm": 0.7281766522542706,
+          "median_RE_deg": 0.2370163911326702,
+          "mean_TE_cm": 1.2284733883368608,
+          "mean_RE_deg": 0.45068207389566944,
+          "R5_pct": 97.25785714285715
+        }
+      },
+      "full_complete": true,
+      "missing_full_scenes": []
+    },
+    "12Scenes": {
+      "compact": {
+        "per_scene": {
+          "apt1_kitchen": {
+            "queries": 357,
+            "median_TE_cm": 0.1630462473258376,
+            "median_RE_deg": 0.08596660851331182,
+            "mean_TE_cm": 0.19596338375670122,
+            "mean_RE_deg": 0.10509998552408657,
+            "R5_pct": 100.0
+          },
+          "apt1_living": {
+            "queries": 493,
+            "median_TE_cm": 0.17932035261765122,
+            "median_RE_deg": 0.08319194421459332,
+            "mean_TE_cm": 0.23336570868922707,
+            "mean_RE_deg": 0.10725505666226778,
+            "R5_pct": 100.0
+          },
+          "apt2_bed": {
+            "queries": 244,
+            "median_TE_cm": 0.24437023093923926,
+            "median_RE_deg": 0.12443659513656405,
+            "mean_TE_cm": 0.38010226277544806,
+            "mean_RE_deg": 0.19344238943377717,
+            "R5_pct": 100.0
+          },
+          "apt2_kitchen": {
+            "queries": 230,
+            "median_TE_cm": 0.11068340972997248,
+            "median_RE_deg": 0.06241081685540515,
+            "mean_TE_cm": 0.5446334294380073,
+            "mean_RE_deg": 0.3370230197438511,
+            "R5_pct": 99.1304347826087
+          },
+          "apt2_living": {
+            "queries": 359,
+            "median_TE_cm": 0.24158938322216272,
+            "median_RE_deg": 0.09992219910184864,
+            "mean_TE_cm": 0.2892362096657896,
+            "mean_RE_deg": 0.13268824080496824,
+            "R5_pct": 100.0
+          },
+          "apt2_luke": {
+            "queries": 624,
+            "median_TE_cm": 0.2978673786856234,
+            "median_RE_deg": 0.13036670678022927,
+            "mean_TE_cm": 0.4445941793071539,
+            "mean_RE_deg": 0.19872712531211179,
+            "R5_pct": 99.67948717948718
+          },
+          "office1_gates362": {
+            "queries": 386,
+            "median_TE_cm": 0.2062685787677765,
+            "median_RE_deg": 0.09252862938206893,
+            "mean_TE_cm": 0.2610830773648907,
+            "mean_RE_deg": 0.11609447013014788,
+            "R5_pct": 100.0
+          },
+          "office1_gates381": {
+            "queries": 1053,
+            "median_TE_cm": 0.2304847352206707,
+            "median_RE_deg": 0.10954818346832464,
+            "mean_TE_cm": 0.29507638751803333,
+            "mean_RE_deg": 0.1391547853491515,
+            "R5_pct": 100.0
+          },
+          "office1_lounge": {
+            "queries": 327,
+            "median_TE_cm": 0.28351384680718184,
+            "median_RE_deg": 0.10729295372196428,
+            "mean_TE_cm": 5.6960650600616844,
+            "mean_RE_deg": 1.7436243967351635,
+            "R5_pct": 98.47094801223241
+          },
+          "office1_manolis": {
+            "queries": 807,
+            "median_TE_cm": 0.2260421635583043,
+            "median_RE_deg": 0.1091182684167973,
+            "mean_TE_cm": 0.2669649884592894,
+            "mean_RE_deg": 0.13235343453919973,
+            "R5_pct": 100.0
+          },
+          "office2_5a": {
+            "queries": 497,
+            "median_TE_cm": 0.5128839053213596,
+            "median_RE_deg": 0.2264537213125827,
+            "mean_TE_cm": 1.8989516265507154,
+            "mean_RE_deg": 0.8239612262739847,
+            "R5_pct": 96.17706237424547
+          },
+          "office2_5b": {
+            "queries": 405,
+            "median_TE_cm": 0.3962181508541107,
+            "median_RE_deg": 0.14094139375024947,
+            "mean_TE_cm": 21.80414433317995,
+            "mean_RE_deg": 1.9840925763164432,
+            "R5_pct": 90.37037037037037
+          }
+        },
+        "macro": {
+          "queries": 5782,
+          "median_TE_cm": 0.2576906985874909,
+          "median_RE_deg": 0.1143481683878283,
+          "mean_TE_cm": 2.6925150538972407,
+          "mean_RE_deg": 0.5011263922354294,
+          "R5_pct": 98.65235855991202
+        }
+      },
+      "full": {
+        "per_scene": {
+          "apt1_kitchen": {
+            "queries": 357,
+            "median_TE_cm": 0.1494472031481564,
+            "median_RE_deg": 0.08705623712934042,
+            "mean_TE_cm": 0.19806740351910873,
+            "mean_RE_deg": 0.110166600401296,
+            "R5_pct": 100.0
+          },
+          "apt1_living": {
+            "queries": 493,
+            "median_TE_cm": 0.17099156975746155,
+            "median_RE_deg": 0.08245730534252688,
+            "mean_TE_cm": 0.22632100658161136,
+            "mean_RE_deg": 0.1031509958266718,
+            "R5_pct": 100.0
+          },
+          "apt2_bed": {
+            "queries": 244,
+            "median_TE_cm": 0.24978779256343842,
+            "median_RE_deg": 0.12943526641259523,
+            "mean_TE_cm": 0.3167585806086656,
+            "mean_RE_deg": 0.16052025714696477,
+            "R5_pct": 100.0
+          },
+          "apt2_kitchen": {
+            "queries": 230,
+            "median_TE_cm": 0.12796972296200693,
+            "median_RE_deg": 0.06726587406598755,
+            "mean_TE_cm": 0.1831958358968183,
+            "mean_RE_deg": 0.10406946946074015,
+            "R5_pct": 100.0
+          },
+          "apt2_living": {
+            "queries": 359,
+            "median_TE_cm": 0.2414281014353037,
+            "median_RE_deg": 0.10032858201725119,
+            "mean_TE_cm": 0.29558804904647085,
+            "mean_RE_deg": 0.13627911090495146,
+            "R5_pct": 100.0
+          },
+          "apt2_luke": {
+            "queries": 624,
+            "median_TE_cm": 0.28945322846993804,
+            "median_RE_deg": 0.13006853300438254,
+            "mean_TE_cm": 1.1256464998950833,
+            "mean_RE_deg": 0.4391169880842601,
+            "R5_pct": 99.83974358974359
+          },
+          "office1_gates362": {
+            "queries": 386,
+            "median_TE_cm": 0.20929243182763457,
+            "median_RE_deg": 0.09295624658186867,
+            "mean_TE_cm": 0.268622865567739,
+            "mean_RE_deg": 0.11998822027905882,
+            "R5_pct": 100.0
+          },
+          "office1_gates381": {
+            "queries": 1053,
+            "median_TE_cm": 0.22355238907039165,
+            "median_RE_deg": 0.1107215419326454,
+            "mean_TE_cm": 0.30248141580627563,
+            "mean_RE_deg": 0.1431942639333314,
+            "R5_pct": 100.0
+          },
+          "office1_lounge": {
+            "queries": 327,
+            "median_TE_cm": 0.3059403272345662,
+            "median_RE_deg": 0.11100758278456613,
+            "mean_TE_cm": 2.1205208492493797,
+            "mean_RE_deg": 0.7620556025698647,
+            "R5_pct": 99.38837920489297
+          },
+          "office1_manolis": {
+            "queries": 807,
+            "median_TE_cm": 0.22162271197885275,
+            "median_RE_deg": 0.11124598573506865,
+            "mean_TE_cm": 0.2742922543017182,
+            "mean_RE_deg": 0.13381723938853654,
+            "R5_pct": 100.0
+          },
+          "office2_5a": {
+            "queries": 497,
+            "median_TE_cm": 0.5128839053213596,
+            "median_RE_deg": 0.2264537213125827,
+            "mean_TE_cm": 1.8989516265507154,
+            "mean_RE_deg": 0.8239612262739847,
+            "R5_pct": 96.17706237424547
+          },
+          "office2_5b": {
+            "queries": 405,
+            "median_TE_cm": 0.3962181508541107,
+            "median_RE_deg": 0.14094139375024947,
+            "mean_TE_cm": 21.80414433317995,
+            "mean_RE_deg": 1.9840925763164432,
+            "R5_pct": 90.37037037037037
+          }
+        },
+        "macro": {
+          "queries": 5782,
+          "median_TE_cm": 0.25821562788526836,
+          "median_RE_deg": 0.11582818917242207,
+          "mean_TE_cm": 2.4178825600169613,
+          "mean_RE_deg": 0.418367712548842,
+          "R5_pct": 98.81462962827104
+        }
+      },
+      "full_complete": true,
+      "missing_full_scenes": []
+    }
+  },
+  "sources_sha256": {
+    "/mnt/pool/sqy/anygsloc_native_baseline_stmary_repair_20261012_v1/query_semantic_on/report.json": "0f6f8faba9e8b32cfc225fd63a672e1c723f594018ca853106b1116f4b92f205",
+    "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T7/protocol.json": "aff7e7e83835d8f64903806f1c9de8095b663fba5c5cbdf5c88269b2940aa5e0",
+    "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/evaluations/ShopFacade/pure_gs/anygsloc/full/results.json": "1d4988174d78eed9b4f8bb9d022ac3e457e3500f0fa246eab3fbde697ae86b5c",
+    "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/evaluations/OldHospital/pure_gs/anygsloc/full/results.json": "38712b5d37b61215de7f4bf6731cbf1c1c929d771efa60c3732b618ff0ff0bc6",
+    "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/evaluations/KingsCollege/pure_gs/anygsloc/full/results.json": "07627462bb1c76e7e040f85042c959d00d4573af72baf502856a97ffee135230",
+    "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/evaluations/GreatCourt/pure_gs/anygsloc/full/results.json": "769bfc60d1ba6254f09a2ee461ee47d5e40d931a399e9931e9f35d7c7be989e0",
+    "/mnt/pool/sqy/anygsloc_full_repaired_baseline_20261011_v1/evaluations/anygsloc/results.json": "f30b23e6ea8348e819cca6517939fe8317b3196e4bb28dc7b429562f70b459f4",
+    "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/results.json": "6fe862f907771cbb4dec8ba35794fff036992dafca050a8b4b11b9ad0b379237",
+    "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/results.json": "66f7daaf2eb1a9fbf7ac3cd516a65ddd16d144ca59bc2204d02beeadf25cd982",
+    "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/results.json": "340ec167ba670092de79b8f83490f97daed96181311829939c956ee1aa004556",
+    "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/results.json": "9a766f15bbe1ef20da47e254152001f9ca6bff9512561d80f30586cce82e122b",
+    "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/results.json": "028857aa928cfa9e868069c3f3b62c3e77f3857b95c2b1d12f49a84359415cc7",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/report.json": "c9ae7da5cf618a17d640a5fbda6aa897265caf265fd297f6f3543665e1c5023f",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/ShopFacade/filter_off_single/results.json": "27fee568b6df4028e497e6cbecb3955e12afa7d9b6fff5aab9c5bdfbadfe4891",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/OldHospital/filter_off_single/results.json": "ea0dfe8efc80af1a772e230c7acbdfe415d1b0c3e075e9710e1dad6459c5da68",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/KingsCollege/filter_off_single/results.json": "223482da2ca26842883ecb8cec2c370f9bc88104b44323152f35b0bc7b8a2e44",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/GreatCourt/filter_off_single/results.json": "a11a4bc4d70d12ca46fe178ec9ff0b786c9da45364c46c4cc90536d70493a3be",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/StMarysChurch/filter_off_single/results.json": "cbd299d4682c0a70b581ada2186e21fe258981f563542b95fac28fcd2df4127a",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/ShopFacade/filter_on_single/results.json": "6c30277767d1ce23da7df0612bbd271ad0aa3aaf52b4d66247936d63200ae4fb",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/OldHospital/filter_on_single/results.json": "3ce666a1f25c2c852d00a2105e76c25777d4c0566a7258f7e7214a2ade6949ae",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/KingsCollege/filter_on_single/results.json": "9e1b143a9703d83ebaf09ff7426c1af61e36cd2a9edda6d8a395c071cc593211",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/GreatCourt/filter_on_single/results.json": "e16ba950da1c352b48d4040305e9e0c92e1d053087e8b7360badb64d297cd649",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/StMarysChurch/filter_on_single/results.json": "6c14b723ec65668de4886b25b2739ff21fdb28c48a7d85eaa67b9cbbbda3405b",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/ShopFacade/filter_off_fused/results.json": "e3e6b04e4eff0145e73160b5e837b8576345b2a87a8b1adc8033d749a7f688cf",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/OldHospital/filter_off_fused/results.json": "e9872fa05bf604d262d79ab1409b620c00d4df2021034a83bdc569399bb2e065",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/KingsCollege/filter_off_fused/results.json": "1e2f042418ce8053623b60906cd3f83effca9a934d4f911448c62120efad172d",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/GreatCourt/filter_off_fused/results.json": "8f175c07fe03d21e657917a047427b886f3adea2e79e9676973c6b7b9f8b7a5f",
+    "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/evaluations/StMarysChurch/filter_off_fused/results.json": "c75d6893c9ef7bdbda3f0a0bcfdf6e0433ef194242b1b150d16c575c9a58fcde",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/protocol.json": "27a48210d6387708cabd98733f3224b0d315022dde991536a3f07c4a025018ce",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/chess/results.json": "24b9bed58de6121c203c6a5a7647104a19390bfbc71d4a9a7eea145e05b315d9",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/chess/verified.json": "f0f33a6806752265ee4e293a2aae7ca5677f39af70c480829c0965b9af6b368b",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/chess/results.json": "9f93d2f96749ccc1b619d54553fa08536fd8cde9137b045496ec8083743897e3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/chess/manifest.json": "66a5bd3cdb11b400bf7a80a1035248388204977301cc40d87e336be991a3c20d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/chess/manifest.json": "addcb32f8b5cceea364aa68b28bfe547098f2d80140db3991a823638c223f490",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/fire/results.json": "2692ffdee3011d31832f2c041da41c8fc7859a10cd644986c483a896a5e81bbe",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/evaluations/7Scenes/fire/results.json": "16e3ad41e52558390b6956645cbf9bc6108d701e57f143e0a068784d2dc5efa8",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/fire/manifest.json": "4ebcb285c9f009e6066083a160d33322231b8a1c8c279fd227b2d1e40baaf7fd",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/evaluations/7Scenes/fire/manifest.json": "d62dd8093712391b01dd96d67d977f9e73feb2dab6ebc8fe1d1dca0e42c907f4",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/heads/results.json": "eb73ac1f0cb31540b75c435cc71ca0cf2bbaf6281148ef539ff14e961a9e3222",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/heads/verified.json": "120cca7b29fbd2d068698b724f4eae9ed1555ce19d47d0b77b4a2086b4fe7e70",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/heads/results.json": "2eb0194c441cb6936c483636ffb7b48e582d3b094dafd12e091cb7a12f90a62f",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/heads/manifest.json": "85f828519c5a7b486780111e6daf8c7bcf59c5abf63bbd40b8cd9b7f7705747d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/heads/manifest.json": "e91aae0e846352d04372df2c7878ceaddc023c311309f5b1799b2d74220572d7",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/office/results.json": "2f7daeb970d973479fed35490fa9b0f8b4c4ad8874ba567da243170ec4c57638",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/office/verified.json": "ccec0cfa3969720a344ded3cb7b799fa6d0b7100a7b870017cb3905001e9dfd1",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/office/results.json": "8f77b00926c1782e41318b1e38c514c4590eddc324b56fbda7436179195c4e6d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/office/manifest.json": "1ae393b26fd8a1a46999da3655afaf2ce4af1fabd2aefbc4e45877b71e8f965d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/office/manifest.json": "359ddc2dda40de8081257f1b52a7905af1074ec7d57d340994d0712873a6472e",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/pumpkin/results.json": "c8b92b5eec83aeebfec4644e6cc8f4526245b89296d026cfa3ad1d6d7e33ee03",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/pumpkin/verified.json": "a839e6d193f970e3af8a523d9a54df9325e42074e1f983b6c89e6c8d1501bf39",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/pumpkin/results.json": "a539eda9d7852e7089e512d1a2265d184bddc80053ace1b3df63f6415914bbaa",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/pumpkin/manifest.json": "ecd6a12a2bb22b1e4393b088e0d020be6fb4b79554ffecb300d9144e03686811",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/pumpkin/manifest.json": "4c3025272b2702a6522874141ee82e6ada6e6dd161b39117325671704e4fadaa",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/redkitchen/results.json": "c1edf21f84b419b35c82671de0f84f86e4bf8303ca1faf3fd7f737acc9e4ec8b",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/redkitchen/verified.json": "41679f6f630fdd1a42acb8ef4a554536c906c77576f0e3c92ee54dfabf709820",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/redkitchen/results.json": "c114cec6a0966499a80d54dca23dc4a4c36cee68f21f366aa6027f8d4bab690a",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/redkitchen/manifest.json": "ffdee3e0a306ed94b834f04718360d86e561c9108ee9705345593707394b0b14",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/redkitchen/manifest.json": "daea890d57b1b4a3afdd0d4cee6a641d6de158e18f77389bcde36a858361eba5",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/7Scenes/stairs/results.json": "e8a51b4492edfbfc63bef6bb24d2473ae04436ec1b060bd905ba277e63b57e7e",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/7Scenes/stairs/verified.json": "0341d80003da306424ab34a06e84a3c229407400ba1ee878659accd8efd4aa46",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/stairs/results.json": "b2c6f23cbb848e00f6a1c78e40364bf1d4e58cfc8b8ab40fb3eb3e78ca23353a",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/7Scenes/stairs/manifest.json": "b7df02d92627a91d7fc4ae70d2fc1b61114b404cd434a11c57401741dbc01ba3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/7Scenes/stairs/manifest.json": "78da11b92dad844ec7efbf6849604d4c24aebc746661557ee69d2d4297c40817",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt1_kitchen/results.json": "ea5779782e6f99c8d983003811c260b5a1eeb5985463874a86915df703716fb4",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt1_kitchen/verified.json": "8dd34d19732573c7e704f5fb5e7cd09c28d5dc44e700e4ee8a3069577b1501e4",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt1_kitchen/results.json": "47288875ab4085f8048e825b528dd9f7e4639650733128c584674cbe312b0753",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt1_kitchen/manifest.json": "b7204d2c23d18fc00b73a0c7698c9bf02b3be0a4dc79c269bdfdfb14e32061a0",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt1_kitchen/manifest.json": "3d74a5054f009b714282997044e854b9d971e45a97de299127b64021bcd12ffd",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt1_living/results.json": "e98902bc37219f6600e6def2777a0e02d3c52191a0173910c863a754cfcdc1d7",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt1_living/verified.json": "268ec019ed705a69b38ddcd872ee57471eda0383571fdba84cfc9a55ace9cfb4",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt1_living/results.json": "1321a819bd7fffe37bc37b59a837a0f354c3e99fddc2cf09b424b2afeb7bd6b8",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt1_living/manifest.json": "9c19c8d610f8c2faaa58333a96ffd6a0650cbcd2f3b344e3daf352819d15a8e3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt1_living/manifest.json": "b9fbdb51a34b842bae07fab34074bff947255933613427ac61cb349fd87316a0",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt2_bed/results.json": "c08839761f501d5fc7864b501f8cb40d877d781f037861442cc0fb8309f91587",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt2_bed/verified.json": "f7268e609117d66c281734ecc6e1496366f55611c375b0961f6ff3ae86a28ca3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_bed/results.json": "7e2b5f13f244371113ccbc2350d21a4c0bbd634f840186569ef917d946a2f7cc",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt2_bed/manifest.json": "6540318c3b0df8ad89af73cce14aa5e49290799ea395014b8888a3029fb43daf",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_bed/manifest.json": "45400f8c1e6191701cbe777d3966dd548983dcc3c46923dd82d6ae644fdaaf03",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt2_kitchen/results.json": "955155b821be1306c28f70017f7dcd07dab2ef50f70fca58bc2db6d444944a1f",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt2_kitchen/verified.json": "7ecd090d5161f0671ba46c650bf2d96a5968f0e7eeb302fac09a90aa7142282d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_kitchen/results.json": "9e94c4b5293c920f41a1896dc7eadf28a175e5f94c9ce8a9f2a7e59525a165bc",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt2_kitchen/manifest.json": "16346b4ca20b85f202053746b521f4deda9d87fb2c8ce23ec83d39132bf60bae",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_kitchen/manifest.json": "d45b88193719531f8ec694969cf0ef0b0421d60078df864905113ced2e7d8d5c",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt2_living/results.json": "7f0e8a9f800c857aa6313f4cca878ef279c36a830dd3f3b9f4b7921b38c431fc",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt2_living/verified.json": "ced703ef485853c2595f5ab75842e2f59f369abd0edebfe3174805be2fb9bcf9",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_living/results.json": "ca1c44b0229798f71ba7a18ef20a5dc9bd8a5456c85f63245eb030a00fec2401",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt2_living/manifest.json": "686bc19c88a09f060dfde2648f51b67d99b440426ba565f3234a191d187dd201",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_living/manifest.json": "fda085c8396f53702362c440416488dd9fc72b696bb94b26c8544fd2cb67df13",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/apt2_luke/results.json": "9c98f4deb3401b6804269ee81ab0a8a7bd505be776c134ab9b2ac0e15860c529",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/apt2_luke/verified.json": "fdf8515e1203963678eabe40d37462f95331eb4e2d8ea728fbfb7018b6ac2efb",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_luke/results.json": "2c8b3bce8e0d7236706eba43e0dd95e0f4374da8ef315d1c7762701f87b1b00d",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/apt2_luke/manifest.json": "1210c83a84d10463782868f6e00a347e36260c92c3128b36d78f71849290f7f6",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/apt2_luke/manifest.json": "a3899081228ea899b91ff51d7dd8a5f8596ecd67e8add88530a1a080bd7eb9a6",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office1_gates362/results.json": "5752b2d28a715698356c4c2c4e7f0813987a4bddf6d676eded6f2bd2d939ecdd",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/office1_gates362/verified.json": "f60d74e1aa05416c95078a768871e01b2f63aa2e8e94d5cd7ca48405c282a4e1",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_gates362/results.json": "02e99e1dd5e45880a873e1df3a781ee02afcbfa7c204578e6ff7dcbcb6a66eb3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office1_gates362/manifest.json": "31d8b2bf739f4dba875e681ba34bbecf0b3b972bba8f29097348e670df367b8c",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_gates362/manifest.json": "785e3141d6c61c4a4e2b5c436c126f22e88a7351719f177eb4dc5838c5f3ab29",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office1_gates381/results.json": "a73bac77268db0907219779f9dc4a15be3c331ca1b5406e11be519b7b43da558",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/office1_gates381/verified.json": "d72b51b4cfd3b2134c17aeced2dd39712df70799f143aa7c5bf709025cc123ca",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_gates381/results.json": "5ac3cdaca621198dcc27bd7eb555a1131365f6ccb5a989a73301c74a6960ebe3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office1_gates381/manifest.json": "5c3ed4554c5876bcd398b45b79e406a3c2e73d5c095ff02a0bcf5a5c62561016",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_gates381/manifest.json": "04bdee0e723d1e94b5ce386f3e53ec053ae36241be9b59f92f78cd09329a53cd",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office1_lounge/results.json": "245baea91f7fffd209f8fff513bd912e28cbad53bf6411984e325add346e7a54",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/office1_lounge/verified.json": "25ad94c6b92ef8bc699e0e6aeeecf128225fb4b572ddaf4041f4631a8bc8674e",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_lounge/results.json": "fead6574ee40449250359e531f3ab8487f588f077697ae4ebd061d43313cb0f7",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office1_lounge/manifest.json": "d5855320cd125b3bae97c8d88068f9f5ed453ecbd466b683de579ca3138b88a1",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_lounge/manifest.json": "0fcbfa5187667bfbb325e848c59be337afca9d84baf217052622bbdbd66b0a4d",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office1_manolis/results.json": "ddfe1634829279bfc0dd587f8bbd78b08c0abf8173bd09ee037f49d7bb0537a5",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/completed/12Scenes/office1_manolis/verified.json": "4ea78e10cfd7e6a82b7eed7f8d988c45ec390514fa9c7a12a6fe9b7fe7d61e80",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_manolis/results.json": "1c3274594b180e33e0ecbd170d9b0b7b32e90dd1e43755cd5da1f0f4992500c3",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office1_manolis/manifest.json": "6617119177db56c1a1c3f80fe8d97dc717ecdf0faa3ffa0c01a164111e70a4b1",
+    "/mnt/pool/sqy/anygsloc_indoor_full_completion_20261015_v1/evaluations/12Scenes/office1_manolis/manifest.json": "93d186023a0b021cdd03a908fb18e08756e6d881ae58067932821a038311752c",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office2_5a/results.json": "e6c706d13e17d33321d143b07c63d5e391245436cbbf3bb4ba070ce3fa00caea",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office2_5a/manifest.json": "15aac91681e0177780dec66c5c1b519aab1e36a26fcc927c3636643b9826dbf3",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office2_5a/manifest.json": "15aac91681e0177780dec66c5c1b519aab1e36a26fcc927c3636643b9826dbf3",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office2_5b/results.json": "e3e75a67958d0979be3a78ca37e08d04d835adccafea319519e8c0b637fcd399",
+    "/mnt/pool/sqy/anygsloc_indoor_full_aligned_20261011_v1/expected/12Scenes/office2_5b/manifest.json": "0425a6ea5702e48c2dc39065a814b6d65e39bb734c37096dc90e55702dc95fc3",
+    "/mnt/pool/sqy/anygsloc_compact_v2_indoor_20261010/evaluations/12Scenes/office2_5b/manifest.json": "0425a6ea5702e48c2dc39065a814b6d65e39bb734c37096dc90e55702dc95fc3"
+  }
+}

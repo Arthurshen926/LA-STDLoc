@@ -1,0 +1,21 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Initialization and measurement-phase memory}
+\label{tab:s_resources}
+\begin{tabular}{lccc}
+\toprule
+Configuration & Init mean (s) & Allocated max (GB) & Reserved max (GB) \\
+\midrule
+AnyGSLoc\_compact & \textbf{4.100} & \textbf{2.738} & 3.322 \\
+AnyGSLoc\_full & 4.240 & 2.900 & \textbf{3.108} \\
+STDLoc\_off & 10.060 & 3.139 & 3.207 \\
+STDLoc\_on & 10.177 & 3.136 & 3.204 \\
+ULFLoc\_off & 7.163 & 3.089 & 3.420 \\
+ULFLoc\_on & 7.144 & 3.089 & 3.922 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Initialization is measured in 15 fresh processes per configuration, after adapter dependency imports and before the first warm-up. Memory is the maximum of per-process measurement-phase PyTorch high-water counters; decimal GB is used. It is not whole-device GPU memory. Bold marks the smallest measured cost in each column.\end{minipage}
+\end{table*}

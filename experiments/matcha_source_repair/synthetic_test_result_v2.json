@@ -1,0 +1,39 @@
+{
+  "schema": "matcha_source_repair_synthetic_cpu_tests_v1",
+  "scope": "Synthetic CPU contract tests including independent-review intrinsics must-fix; no real source conversion or GPU/checkpoint test.",
+  "observed_utc_date": "2026-10-12",
+  "project": "agent:pakka-container:stdloc",
+  "cwd": "/root/STDLoc",
+  "executable": "/root/miniconda3/envs/cybersim_agent/bin/python",
+  "argv": [
+    "-B",
+    "experiments/matcha_source_repair/test_prepare.py"
+  ],
+  "assertion_name": "synthetic_cpu_pose_transport_intrinsics_contract",
+  "tests_run": 13,
+  "result": "OK",
+  "reported_test_seconds": 0.029,
+  "tests": [
+    "missing_name_and_bad_q_fail",
+    "only_qt_replaced",
+    "point_owner_transport_and_nonxyz_preserved",
+    "copied_chart_intrinsics_change_rejected",
+    "dense_name_binding_and_pinhole_projection",
+    "model_or_camera_id_binding_rejected",
+    "same_pose_changed_dense_fx_rejected",
+    "same_pose_changed_dense_size_rejected",
+    "frozen_horizon_and_type",
+    "unauthorized_destination_fails_before_reads",
+    "affine_local_frame",
+    "bad_transforms_rejected",
+    "scaled_float32_roundtrip"
+  ],
+  "source_sha256": {
+    "/root/STDLoc/experiments/matcha_source_repair/prepare.py": "85bfab6bf42597ebb67c2a97437020e518ff661886da156be8366377c026df09",
+    "/root/STDLoc/experiments/matcha_source_repair/test_prepare.py": "f326299009c2d168783260b209e32254700c23b4cf7ba4b1bfbd6eb60db1e09c"
+  },
+  "large_input_conversion_run": false,
+  "gpu_run": false,
+  "provenance": "Observed official WebCodex run_process tool result; structured summary, not verbatim raw process log.",
+  "supersedes_for_current_source": "synthetic_test_result.json remains an unchanged historical result for the previous source hash."
+}

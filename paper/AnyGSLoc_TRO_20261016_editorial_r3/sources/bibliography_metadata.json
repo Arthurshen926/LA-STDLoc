@@ -1,0 +1,1142 @@
+{
+  "titles": {
+    "https://arxiv.org/html/2605.04730v1": "ULF-Loc: Unbiased Landmark Feature for Robust Visual Localization with 3D Gaussian Splatting",
+    "https://arxiv.org/html/2503.19358v1": "From Sparse to Dense: Camera Relocalization with Scene-Specific Detector from Feature Gaussian Splatting",
+    "https://arxiv.org/html/2605.07351v1": "Disambiguating 2D-3D Correspondences in Gaussian Splatting-based Feature Fields for Visual Localization",
+    "https://arxiv.org/html/2508.18242v1": "GSVisLoc: Generalizable Visual Localization for Gaussian Splatting Scene Representations"
+  },
+  "entries": {
+    "https://arxiv.org/html/2605.04730v1": {
+      "1": {
+        "text": "[1] E. Arnold, J. Wynn, S. Vicente, G. Garcia-Hernando, A. Monszpart, V. Prisacariu, D. Turmukhambetov, and E. Brachmann (2022) Map-free visual relocalization: metric pose relative to a single image . In European Conference on Computer Vision , pp. 690–708 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib31"
+      },
+      "2": {
+        "text": "[2] K. Botashev, V. Pyatov, G. Ferrer, and S. Lefkimmiatis (2024) Gsloc: visual localization with 3d gaussian splatting . In 2024 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 5664–5671 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib45"
+      },
+      "3": {
+        "text": "[3] E. Brachmann, T. Cavallari, and V. A. Prisacariu (2023) Accelerated coordinate encoding: learning to relocalize in minutes using rgb and poses . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 5044–5053 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib5"
+      },
+      "4": {
+        "text": "[4] E. Brachmann, M. Humenberger, C. Rother, and T. Sattler (2021) On the limits of pseudo ground truth in visual camera re-localisation . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 6218–6228 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib1"
+      },
+      "5": {
+        "text": "[5] E. Brachmann and C. Rother (2021) Visual camera re-localization from rgb and rgb-d images using dsac . IEEE transactions on pattern analysis and machine intelligence 44 ( 9 ), pp. 5847–5865 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib35"
+      },
+      "6": {
+        "text": "[6] L. Bruns, A. Barroso-Laguna, T. Cavallari, S. Munukutla, V. A. Prisacariu, E. Brachmann, et al. (2025) ACE-g: improving generalization of scene coordinate regression through query pre-training . arXiv preprint arXiv:2510.11605 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib36"
+      },
+      "7": {
+        "text": "[7] K. Chen, Y. Zhong, Z. Li, J. Lin, Y. Chen, M. Qin, and H. Wang (2025) Quantifying and alleviating co-adaptation in sparse-view 3d gaussian splatting . arXiv preprint arXiv:2508.12720 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib66"
+      },
+      "8": {
+        "text": "[8] L. Chen, W. Chen, R. Wang, and M. Pollefeys (2024) Leveraging neural radiance fields for uncertainty-aware visual localization . In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 6298–6305 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib8"
+      },
+      "9": {
+        "text": "[9] S. Chen, Y. Bhalgat, X. Li, J. Bian, K. Li, Z. Wang, and V. A. Prisacariu (2024) Neural refinement for absolute pose regression with feature synthesis . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20987–20996 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib27"
+      },
+      "10": {
+        "text": "[10] S. Chen, T. Cavallari, V. A. Prisacariu, and E. Brachmann (2024) Map-relative pose regression for visual re-localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20665–20674 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib24"
+      },
+      "11": {
+        "text": "[11] S. Chen, X. Li, Z. Wang, and V. A. Prisacariu (2022) Dfnet: enhance absolute pose regression with direct feature matching . In European Conference on Computer Vision , pp. 1–17 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib26"
+      },
+      "12": {
+        "text": "[12] B. Cheng, I. Misra, A. G. Schwing, A. Kirillov, and R. Girdhar (2022) Masked-attention mask transformer for universal image segmentation . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 1290–1299 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib4"
+      },
+      "13": {
+        "text": "[13] D. DeTone, T. Malisiewicz, and A. Rabinovich (2018) Superpoint: self-supervised interest point detection and description . In Proceedings of the IEEE conference on computer vision and pattern recognition workshops , pp. 224–236 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib16"
+      },
+      "14": {
+        "text": "[14] Y. Ding, J. Yang, V. Larsson, C. Olsson, and K. Åström (2023) Revisiting the p3p problem . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 4872–4880 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib19"
+      },
+      "15": {
+        "text": "[15] S. Dong, S. Wang, S. Liu, L. Cai, Q. Fan, J. Kannala, and Y. Yang (2025) Reloc3r: large-scale training of relative camera pose regression for generalizable, fast, and accurate visual localization . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 16739–16752 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib64"
+      },
+      "16": {
+        "text": "[16] M. Dusmanu, I. Rocco, T. Pajdla, M. Pollefeys, J. Sivic, A. Torii, and T. Sattler (2019) D2-net: a trainable cnn for joint description and detection of local features . In Proceedings of the ieee/cvf conference on computer vision and pattern recognition , pp. 8092–8101 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib17"
+      },
+      "17": {
+        "text": "[17] M. A. Fischler and R. C. Bolles (1981) Random sample consensus: a paradigm for model fitting with applications to image analysis and automated cartography . Communications of the ACM 24 ( 6 ), pp. 381–395 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib11"
+      },
+      "18": {
+        "text": "[18] Z. Huang, H. Yu, Y. Shentu, J. Yuan, and G. Zhang (2025) From sparse to dense: camera relocalization with scene-specific detector from feature gaussian splatting . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 27059–27069 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib6"
+      },
+      "19": {
+        "text": "[19] X. Jiang, Y. Xia, X. Zhang, and J. Ma (2022) Robust image matching via local graph structure consensus . Pattern Recognition 126 , pp. 108588 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib65"
+      },
+      "20": {
+        "text": "[20] A. Kendall, M. Grimes, and R. Cipolla (2015) Posenet: a convolutional network for real-time 6-dof camera relocalization . In Proceedings of the IEEE international conference on computer vision , pp. 2938–2946 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib2"
+      },
+      "21": {
+        "text": "[21] B. Kerbl, G. Kopanas, T. Leimkühler, and G. Drettakis (2023) 3D gaussian splatting for real-time radiance field rendering. . ACM Trans. Graph. 42 ( 4 ), pp. 139–1 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib43"
+      },
+      "22": {
+        "text": "[22] A. Kirillov, E. Mintun, N. Ravi, H. Mao, C. Rolland, L. Gustafson, T. Xiao, S. Whitehead, A. C. Berg, W. Lo, et al. (2023) Segment anything . In Proceedings of the IEEE/CVF international conference on computer vision , pp. 4015–4026 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib54"
+      },
+      "23": {
+        "text": "[23] V. Larsson and contributors (2020) PoseLib - Minimal Solvers for Camera Pose Estimation . External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib12"
+      },
+      "24": {
+        "text": "[24] V. Lepetit, F. Moreno-Noguer, and P. Fua (2009) EPnP: an accurate o(n) solution to the pnp problem . International journal of computer vision 81 ( 2 ), pp. 155–166 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib10"
+      },
+      "25": {
+        "text": "[25] V. Leroy, Y. Cabon, and J. Revaud (2024) Grounding image matching in 3d with mast3r . In European Conference on Computer Vision , pp. 71–91 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib34"
+      },
+      "26": {
+        "text": "[26] X. Li, S. Wang, Y. Zhao, J. Verbeek, and J. Kannala (2020) Hierarchical scene coordinate classification and regression for visual localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 11983–11992 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib38"
+      },
+      "27": {
+        "text": "[27] J. Lin, J. Gu, B. Wu, L. Fan, R. Chen, L. Liu, and J. Ye (2024) Learning neural volumetric pose features for camera localization . In European Conference on Computer Vision , pp. 198–214 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib28"
+      },
+      "28": {
+        "text": "[28] C. Liu, S. Chen, Y. S. Bhalgat, S. HU, M. Cheng, Z. Wang, V. A. Prisacariu, and T. Braud (2025) GS-CPR: efficient camera pose refinement via 3d gaussian splatting . In The Thirteenth International Conference on Learning Representations , External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib61"
+      },
+      "29": {
+        "text": "[29] C. Liu, S. Chen, Y. Zhao, H. Huang, V. Prisacariu, and T. Braud (2024) Hr-apr: apr-agnostic framework with uncertainty estimation and hierarchical refinement for camera relocalisation . In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 8544–8550 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib58"
+      },
+      "30": {
+        "text": "[30] S. Liu, Y. Gao, T. Zhang, R. Pautrat, J. L. Schönberger, V. Larsson, and M. Pollefeys (2024) Robust incremental structure-from-motion with hybrid features . In European Conference on Computer Vision , pp. 249–269 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib18"
+      },
+      "31": {
+        "text": "[31] D. G. Lowe (2004) Distinctive image features from scale-invariant keypoints . International journal of computer vision 60 ( 2 ), pp. 91–110 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib13"
+      },
+      "32": {
+        "text": "[32] B. Matteo, T. Tsesmelis, S. James, F. Poiesi, and A. Del Bue (2024) 6dgs: 6d pose estimation from a single image and a 3d gaussian splatting model . In European Conference on Computer Vision , pp. 420–436 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib46"
+      },
+      "33": {
+        "text": "[33] B. Mildenhall, P. P. Srinivasan, M. Tancik, J. T. Barron, R. Ramamoorthi, and R. Ng (2021) Nerf: representing scenes as neural radiance fields for view synthesis . Communications of the ACM 65 ( 1 ), pp. 99–106 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib25"
+      },
+      "34": {
+        "text": "[34] A. Moreau, N. Piasco, M. Bennehar, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2023) Crossfire: camera relocalization on self-supervised features from an implicit representation . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 252–262 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib42"
+      },
+      "35": {
+        "text": "[35] A. Moreau, N. Piasco, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2022) Lens: localization enhanced by nerf synthesis . In Conference on Robot Learning , pp. 1347–1356 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib29"
+      },
+      "36": {
+        "text": "[36] T. Ng, A. Lopez-Rodriguez, V. Balntas, and K. Mikolajczyk (2021) Reassessing the limitations of cnn methods for camera pose regression . In International Conference on 3D Vision ,",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib62"
+      },
+      "37": {
+        "text": "[37] V. Panek, Z. Kukelova, and T. Sattler (2022) Meshloc: mesh-based visual localization . In European Conference on Computer Vision , pp. 589–609 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib14"
+      },
+      "38": {
+        "text": "[38] M. Pietrantoni, G. Csurka, and T. Sattler (2025) Gaussian splatting feature fields for (privacy-preserving) visual localization . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 1082–1092 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib52"
+      },
+      "39": {
+        "text": "[39] P. Purkait, C. Zhao, and C. Zach (2018) Synthetic view generation for absolute pose regression and image synthesis. . In BMVC , pp. 69 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib30"
+      },
+      "40": {
+        "text": "[40] M. Qin, W. Li, J. Zhou, H. Wang, and H. Pfister (2024) Langsplat: 3d language gaussian splatting . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20051–20060 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib48"
+      },
+      "41": {
+        "text": "[41] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P. Mishkin, J. Clark, et al. (2021) Learning transferable visual models from natural language supervision . In International conference on machine learning , pp. 8748–8763 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib53"
+      },
+      "42": {
+        "text": "[42] J. Revaud, C. De Souza, M. Humenberger, and P. Weinzaepfel (2019) R2d2: reliable and repeatable detector and descriptor . Advances in neural information processing systems 32 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib22"
+      },
+      "43": {
+        "text": "[43] P. Sarlin, C. Cadena, R. Siegwart, and M. Dymczyk (2019) From coarse to fine: robust hierarchical localization at large scale . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 12716–12725 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib15"
+      },
+      "44": {
+        "text": "[44] P. Sarlin, D. DeTone, T. Malisiewicz, and A. Rabinovich (2020) Superglue: learning feature matching with graph neural networks . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 4938–4947 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib23"
+      },
+      "45": {
+        "text": "[45] P. Sarlin, A. Unagar, M. Larsson, H. Germain, C. Toft, V. Larsson, M. Pollefeys, V. Lepetit, L. Hammarstrand, F. Kahl, et al. (2021) Back to the feature: learning robust camera localization from pixels to pose . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 3247–3257 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib20"
+      },
+      "46": {
+        "text": "[46] T. Sattler, B. Leibe, and L. Kobbelt (2011) Fast image-based localization using direct 2d-to-3d matching . In 2011 International Conference on Computer Vision , pp. 667–674 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib9"
+      },
+      "47": {
+        "text": "[47] T. Sattler, B. Leibe, and L. Kobbelt (2012) Improving image-based localization by active correspondence search . In European conference on computer vision , pp. 752–765 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib55"
+      },
+      "48": {
+        "text": "[48] J. L. Schonberger and J. Frahm (2016) Structure-from-motion revisited . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 4104–4113 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib63"
+      },
+      "49": {
+        "text": "[49] Y. Shavit, R. Ferens, and Y. Keller (2021) Learning multi-scene absolute pose regression with transformers . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 2733–2742 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib33"
+      },
+      "50": {
+        "text": "[50] Y. Shavit and Y. Keller (2022) Camera pose auto-encoders for improving pose regression . In European Conference on Computer Vision , pp. 140–157 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib32"
+      },
+      "51": {
+        "text": "[51] J. Shi, M. Wang, H. Duan, and S. Guan (2024) Language embedded 3d gaussians for open-vocabulary scene understanding . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 5333–5343 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib49"
+      },
+      "52": {
+        "text": "[52] J. Shotton, B. Glocker, C. Zach, S. Izadi, A. Criminisi, and A. Fitzgibbon (2013) Scene coordinate regression forests for camera relocalization in rgb-d images . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 2930–2937 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib59"
+      },
+      "53": {
+        "text": "[53] G. Sidorov, M. Mohrat, D. Gridusov, R. Rakhimov, and S. Kolyubin (2024) GSplatLoc: grounding keypoint descriptors into 3d gaussian splatting for improved visual localization . arXiv preprint arXiv:2409.16502 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib47"
+      },
+      "54": {
+        "text": "[54] J. Sun, Z. Shen, Y. Wang, H. Bao, and X. Zhou (2021) LoFTR: detector-free local feature matching with transformers . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 8922–8931 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib3"
+      },
+      "55": {
+        "text": "[55] Y. Sun, X. Wang, Y. Zhang, J. Zhang, C. Jiang, Y. Guo, and F. Wang (2023) Icomma: inverting 3d gaussian splatting for camera pose estimation via comparing and matching . arXiv preprint arXiv:2312.09031 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib44"
+      },
+      "56": {
+        "text": "[56] S. Tang, S. Tang, A. Tagliasacchi, P. Tan, and Y. Furukawa (2023) Neumap: neural coordinate mapping by auto-transdecoder for camera localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 929–939 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib7"
+      },
+      "57": {
+        "text": "[57] A. Torii, R. Arandjelovic, J. Sivic, M. Okutomi, and T. Pajdla (2015) 24/7 place recognition by view synthesis . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 1808–1817 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib56"
+      },
+      "58": {
+        "text": "[58] G. Trivigno, C. Masone, B. Caputo, and T. Sattler (2024) The unreasonable effectiveness of pre-trained features for camera pose refinement . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 12786–12798 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib57"
+      },
+      "59": {
+        "text": "[59] J. Valentin, A. Dai, M. Nießner, P. Kohli, P. Torr, S. Izadi, and C. Keskin (2016) Learning to navigate the energy landscape . In 2016 Fourth International Conference on 3D Vision (3DV) , pp. 323–332 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib60"
+      },
+      "60": {
+        "text": "[60] F. Wang, X. Jiang, S. Galliani, C. Vogel, and M. Pollefeys (2024) Glace: global local accelerated coordinate encoding . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21562–21571 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib37"
+      },
+      "61": {
+        "text": "[61] S. Wang, J. Kannala, and D. Barath (2024) Dgc-gnn: leveraging geometry and color cues for visual descriptor-free 2d-3d matching . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20881–20891 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib21"
+      },
+      "62": {
+        "text": "[62] Y. Wang, T. Huang, H. Chen, and G. H. Lee (2025) FreeSplat++: generalizable 3d gaussian splatting for efficient indoor scene reconstruction . arXiv preprint arXiv:2503.22986 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib67"
+      },
+      "63": {
+        "text": "[63] S. Yan, P. Shi, and J. Li (2024) ML-semreg: boosting point cloud registration with multi-level semantic consistency . In European Conference on Computer Vision , pp. 19–37 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib70"
+      },
+      "64": {
+        "text": "[64] S. Yan, P. Shi, Z. Zhao, K. Wang, K. Cao, J. Wu, and J. Li (2025) TurboReg: turboclique for robust and efficient point cloud registration . arXiv preprint arXiv:2507.01439 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib68"
+      },
+      "65": {
+        "text": "[65] S. Yan, Y. Wang, K. Zhao, P. Shi, Z. Zhao, Y. Zhang, and J. Li (2025) HeMoRa: unsupervised heuristic consensus sampling for robust point cloud registration . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 1363–1373 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib69"
+      },
+      "66": {
+        "text": "[66] L. Yen-Chen, P. Florence, J. T. Barron, A. Rodriguez, P. Isola, and T. Lin (2021) Inerf: inverting neural radiance fields for pose estimation . In 2021 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 1323–1330 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib39"
+      },
+      "67": {
+        "text": "[67] H. Zhai, X. Zhang, B. Zhao, H. Li, Y. He, Z. Cui, H. Bao, and G. Zhang (2025) Splatloc: 3d gaussian splatting-based visual localization for augmented reality . IEEE Transactions on Visualization and Computer Graphics .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib51"
+      },
+      "68": {
+        "text": "[68] B. Zhao, L. Yang, M. Mao, H. Bao, and Z. Cui (2024) Pnerfloc: visual localization with point-based neural radiance fields . In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 38 , pp. 7450–7459 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib40"
+      },
+      "69": {
+        "text": "[69] Q. Zhou, M. Maximov, O. Litany, and L. Leal-Taixé (2024) The nerfect match: exploring nerf features for visual localization . In European Conference on Computer Vision , pp. 108–127 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib41"
+      },
+      "70": {
+        "text": "[70] S. Zhou, H. Chang, S. Jiang, Z. Fan, Z. Zhu, D. Xu, P. Chari, S. You, Z. Wang, and A. Kadambi (2024) Feature 3dgs: supercharging 3d gaussian splatting to enable distilled feature fields . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21676–21685 .",
+        "source_anchor": "https://arxiv.org/html/2605.04730v1#bib.bib50"
+      }
+    },
+    "https://arxiv.org/html/2503.19358v1": {
+      "1": {
+        "text": "[1] Relja Arandjelovic, Petr Gronat, Akihiko Torii, Tomas Pajdla, and Josef Sivic. NetVLAD: CNN architecture for weakly supervised place recognition. In CVPR , pages 5297–5307, 2016.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib1"
+      },
+      "2": {
+        "text": "[2] Matteo Bortolon, Theodore Tsesmelis, Stuart James, Fabio Poiesi, and Alessio Del Bue. 6DGS: 6D pose estimation from a single image and a 3D gaussian splatting model. In ECCV , 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib2"
+      },
+      "3": {
+        "text": "[3] Kazii Botashev, Vladislav Pyatov, Gonzalo Ferrer, and Stamatios Lefkimmiatis. GSLoc: Visual localization with 3D gaussian splatting. arXiv preprint arXiv:2410.06165 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib3"
+      },
+      "4": {
+        "text": "[4] Eric Brachmann and Carsten Rother. Learning less is more - 6D camera localization via 3D surface regression. In CVPR , pages 4654–4662, 2018.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib4"
+      },
+      "5": {
+        "text": "[5] Eric Brachmann and Carsten Rother. Visual camera re-localization from RGB and RGB-D images using DSAC. IEEE TPAMI , 2021a.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib5"
+      },
+      "6": {
+        "text": "[6] Eric Brachmann and Carsten Rother. Visual camera re-localization from RGB and RGB-D images using DSAC. IEEE TPAMI , 44(9):5847–5865, 2021b.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib6"
+      },
+      "7": {
+        "text": "[7] Eric Brachmann, Martin Humenberger, Carsten Rother, and Torsten Sattler. On the limits of pseudo ground truth in visual camera re-localisation. In ICCV , pages 6218–6228, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib7"
+      },
+      "8": {
+        "text": "[8] Eric Brachmann, Tommaso Cavallari, and Victor Adrian Prisacariu. Accelerated Coordinate Encoding: Learning to relocalize in minutes using RGB and poses. In CVPR , 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib8"
+      },
+      "9": {
+        "text": "[9] Shuai Chen, Zirui Wang, and Victor Prisacariu. Direct-posenet: Absolute pose regression with photometric consistency. In 3DV , pages 1175–1185. IEEE, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib9"
+      },
+      "10": {
+        "text": "[10] Shuai Chen, Xinghui Li, Zirui Wang, and Victor A Prisacariu. DFNet: Enhance absolute pose regression with direct feature matching. In ECCV , pages 1–17. Springer, 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib10"
+      },
+      "11": {
+        "text": "[11] Shuai Chen, Yash Bhalgat, Xinghui Li, Jia-Wang Bian, Kejie Li, Zirui Wang, and Victor Adrian Prisacariu. Neural refinement for absolute pose regression with feature synthesis. In CVPR , pages 20987–20996, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib11"
+      },
+      "12": {
+        "text": "[12] Bowen Cheng, Ishan Misra, Alexander G Schwing, Alexander Kirillov, and Rohit Girdhar. Masked-attention mask transformer for universal image segmentation. In CVPR , pages 1290–1299, 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib12"
+      },
+      "13": {
+        "text": "[13] Yuzhou Cheng, Jianhao Jiao, Yue Wang, and Dimitrios Kanoulas. LoGS: Visual localization via gaussian splatting with fewer training images. arXiv preprint arXiv:2410.11505 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib13"
+      },
+      "14": {
+        "text": "[14] Daniel DeTone, Tomasz Malisiewicz, and Andrew Rabinovich. Superpoint: Self-supervised interest point detection and description. In CVPRW , pages 224–236, 2018.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib14"
+      },
+      "15": {
+        "text": "[15] Tien Do, Ondrej Miksik, Joseph DeGol, Hyun Soo Park, and Sudipta N Sinha. Learning to detect scene landmarks for camera localization. In CVPR , pages 11132–11142, 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib15"
+      },
+      "16": {
+        "text": "[16] Johan Edstedt, Qiyu Sun, Georg Bökman, Mårten Wadenbäck, and Michael Felsberg. RoMa: Robust dense feature matching. In CVPR , pages 19790–19800, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib16"
+      },
+      "17": {
+        "text": "[17] Martin A Fischler and Robert C Bolles. Random sample consensus: a paradigm for model fitting with applications to image analysis and automated cartography. Communications of the ACM , 24(6):381–395, 1981.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib17"
+      },
+      "18": {
+        "text": "[18] Khang Truong Giang, Soohwan Song, and Sungho Jo. Learning to produce semi-dense correspondences for visual localization. In CVPR , pages 19468–19478, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib18"
+      },
+      "19": {
+        "text": "[19] Binbin Huang, Zehao Yu, Anpei Chen, Andreas Geiger, and Shenghua Gao. 2D gaussian splatting for geometrically accurate radiance fields. In ACM SIGGRAPH , pages 1–11, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib19"
+      },
+      "20": {
+        "text": "[20] Alex Kendall, Matthew Grimes, and Roberto Cipolla. PoseNet: A convolutional network for real-time 6-DOF camera relocalization. In ICCV , pages 2938–2946, 2015.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib20"
+      },
+      "21": {
+        "text": "[21] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkuehler, and George Drettakis. 3D gaussian splatting for real-time radiance field rendering. ACM TOG , 42(4):1–14, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib21"
+      },
+      "22": {
+        "text": "[22] Minjung Kim, Junseo Koo, and Gunhee Kim. EP2P-Loc: End-to-end 3D point to 2D pixel localization for large-scale visual localization. In ICCV , pages 21527–21537, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib22"
+      },
+      "23": {
+        "text": "[23] Viktor Larsson and contributors. PoseLib - Minimal Solvers for Camera Pose Estimation, 2020.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib23"
+      },
+      "24": {
+        "text": "[24] Vincent Lepetit, Francesc Moreno-Noguer, and Pascal Fua. EPnP: An accurate O(n) solution to the PnP problem. IJCV , 81(2):155–166, 2009.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib24"
+      },
+      "25": {
+        "text": "[25] Yunpeng Li, Noah Snavely, and Daniel P Huttenlocher. Location recognition using prioritized feature matching. In ECCV , pages 791–804. Springer, 2010.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib25"
+      },
+      "26": {
+        "text": "[26] Yunzhi Lin, Thomas Müller, Jonathan Tremblay, Bowen Wen, Stephen Tyree, Alex Evans, Patricio A Vela, and Stan Birchfield. Parallel inversion of neural radiance fields for robust pose estimation. In ICRA , pages 9377–9384. IEEE, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib26"
+      },
+      "27": {
+        "text": "[27] Philipp Lindenberger, Paul-Edouard Sarlin, and Marc Pollefeys. LightGlue: Local feature matching at light speed. In ICCV , pages 17627–17638, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib27"
+      },
+      "28": {
+        "text": "[28] Changkun Liu, Shuai Chen, Yash Sanjay Bhalgat, Siyan HU, Ming Cheng, Zirui Wang, Victor Adrian Prisacariu, and Tristan Braud. GS-CPR: Efficient camera pose refinement via 3D gaussian splatting. In ICLR , 2025.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib28"
+      },
+      "29": {
+        "text": "[29] Jianlin Liu, Qiang Nie, Yong Liu, and Chengjie Wang. NeRF-Loc: Visual localization with conditional neural radiance field. In ICRA , pages 9385–9392. IEEE, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib29"
+      },
+      "30": {
+        "text": "[30] Liu Liu, Hongdong Li, and Yuchao Dai. Efficient global 2D-3D matching for camera localization in a large-scale 3D map. In ICCV , pages 2372–2381, 2017.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib30"
+      },
+      "31": {
+        "text": "[31] David G Lowe. Object recognition from local scale-invariant features. In ICCV , pages 1150–1157. IEEE, 1999.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib31"
+      },
+      "32": {
+        "text": "[32] Ricardo Martin-Brualla, Noha Radwan, Mehdi SM Sajjadi, Jonathan T Barron, Alexey Dosovitskiy, and Daniel Duckworth. NeRF in the wild: Neural radiance fields for unconstrained photo collections. In CVPR , pages 7210–7219, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib32"
+      },
+      "33": {
+        "text": "[33] N. Max. Optical models for direct volume rendering. IEEE TVCG , 1(2):99–108, 1995.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib33"
+      },
+      "34": {
+        "text": "[34] Ben Mildenhall, Pratul P. Srinivasan, Matthew Tancik, Jonathan T. Barron, Ravi Ramamoorthi, and Ren Ng. NeRF: Representing scenes as neural radiance fields for view synthesis. In ECCV , 2020.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib34"
+      },
+      "35": {
+        "text": "[35] Arthur Moreau, Nathan Piasco, Dzmitry Tsishkou, Bogdan Stanciulescu, and Arnaud de La Fortelle. Coordinet: uncertainty-aware pose regressor for reliable vehicle localization. In WACV , pages 2229–2238, 2022a.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib35"
+      },
+      "36": {
+        "text": "[36] Arthur Moreau, Nathan Piasco, Dzmitry Tsishkou, Bogdan Stanciulescu, and Arnaud de La Fortelle. LENS: Localization enhanced by NeRF synthesis. In CoRL , pages 1347–1356. PMLR, 2022b.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib36"
+      },
+      "37": {
+        "text": "[37] Arthur Moreau, Nathan Piasco, Moussab Bennehar, Dzmitry Tsishkou, Bogdan Stanciulescu, and Arnaud de La Fortelle. CROSSFIRE: Camera relocalization on self-supervised features from an implicit representation. In ICCV , pages 252–262, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib37"
+      },
+      "38": {
+        "text": "[38] Vojtech Panek, Zuzana Kukelova, and Torsten Sattler. Meshloc: Mesh-based visual localization. In ECCV , pages 589–609. Springer, 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib38"
+      },
+      "39": {
+        "text": "[39] Vojtech Panek, Zuzana Kukelova, and Torsten Sattler. Visual localization using imperfect 3D models from the internet. In CVPR , pages 13175–13186, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib39"
+      },
+      "40": {
+        "text": "[40] Guilherme Potje, Felipe Cadar, André Araujo, Renato Martins, and Erickson R Nascimento. XFeat: Accelerated features for lightweight image matching. In CVPR , pages 2682–2691, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib40"
+      },
+      "41": {
+        "text": "[41] Jerome Revaud, Philippe Weinzaepfel, César Roberto de Souza, and Martin Humenberger. R2D2: repeatable and reliable detector and descriptor. In NeurIPS , 2019.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib41"
+      },
+      "42": {
+        "text": "[42] Jerome Revaud, Yohann Cabon, Romain Brégier, JongMin Lee, and Philippe Weinzaepfel. SACReg: Scene-agnostic coordinate regression for visual localization. In CVPR , pages 688–698, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib42"
+      },
+      "43": {
+        "text": "[43] Paul-Edouard Sarlin, Cesar Cadena, Roland Siegwart, and Marcin Dymczyk. From coarse to fine: Robust hierarchical localization at large scale. In CVPR , pages 12716–12725, 2019.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib43"
+      },
+      "44": {
+        "text": "[44] Paul-Edouard Sarlin, Daniel DeTone, Tomasz Malisiewicz, and Andrew Rabinovich. SuperGlue: Learning feature matching with graph neural networks. In CVPR , 2020.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib44"
+      },
+      "45": {
+        "text": "[45] Paul-Edouard Sarlin, Ajaykumar Unagar, Mans Larsson, Hugo Germain, Carl Toft, Viktor Larsson, Marc Pollefeys, Vincent Lepetit, Lars Hammarstrand, Fredrik Kahl, et al. Back to the feature: Learning robust camera localization from pixels to pose. In CVPR , pages 3247–3257, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib45"
+      },
+      "46": {
+        "text": "[46] Torsten Sattler, Bastian Leibe, and Leif Kobbelt. Improving image-based localization by active correspondence search. In ECCV , pages 752–765. Springer, 2012.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib46"
+      },
+      "47": {
+        "text": "[47] Torsten Sattler, Will Maddern, Carl Toft, Akihiko Torii, Lars Hammarstrand, Erik Stenborg, Daniel Safari, Masatoshi Okutomi, Marc Pollefeys, Josef Sivic, et al. Benchmarking 6DOF outdoor visual localization in changing conditions. In CVPR , pages 8601–8610, 2018.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib47"
+      },
+      "48": {
+        "text": "[48] Johannes L Schonberger and Jan-Michael Frahm. Structure-from-motion revisited. In CVPR , pages 4104–4113, 2016.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib48"
+      },
+      "49": {
+        "text": "[49] Yoli Shavit and Yosi Keller. Camera pose auto-encoders for improving pose regression. In ECCV , pages 140–157. Springer, 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib49"
+      },
+      "50": {
+        "text": "[50] Jamie Shotton, Ben Glocker, Christopher Zach, Shahram Izadi, Antonio Criminisi, and Andrew Fitzgibbon. Scene coordinate regression forests for camera relocalization in RGB-D images. In CVPR , pages 2930–2937, 2013.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib50"
+      },
+      "51": {
+        "text": "[51] Gennady Sidorov, Malik Mohrat, Ksenia Lebedeva, Ruslan Rakhimov, and Sergey Kolyubin. GSplatLoc: Grounding keypoint descriptors into 3D gaussian splatting for improved visual localization. arXiv preprint arXiv:2409.16502 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib51"
+      },
+      "52": {
+        "text": "[52] Jiaming Sun, Zehong Shen, Yuang Wang, Hujun Bao, and Xiaowei Zhou. LoFTR: Detector-free local feature matching with transformers. In CVPR , pages 8922–8931, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib52"
+      },
+      "53": {
+        "text": "[53] Yuan Sun, Xuan Wang, Yunfan Zhang, Jie Zhang, Caigui Jiang, Yu Guo, and Fei Wang. iComMa: Inverting 3D gaussians splatting for camera pose estimation via comparing and matching. arXiv preprint arXiv:2312.09031 , 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib53"
+      },
+      "54": {
+        "text": "[54] Linus Svärm, Olof Enqvist, Fredrik Kahl, and Magnus Oskarsson. City-scale localization for cameras with known vertical direction. IEEE TPAMI , 39(7):1455–1461, 2016.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib54"
+      },
+      "55": {
+        "text": "[55] Hajime Taira, Masatoshi Okutomi, Torsten Sattler, Mircea Cimpoi, Marc Pollefeys, Josef Sivic, Tomas Pajdla, and Akihiko Torii. InLoc: Indoor visual localization with dense matching and view synthesis. In CVPR , pages 7199–7209, 2018.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib55"
+      },
+      "56": {
+        "text": "[56] Shitao Tang, Sicong Tang, Andrea Tagliasacchi, Ping Tan, and Yasutaka Furukawa. Neumap: Neural coordinate mapping by auto-transdecoder for camera localization. In CVPR , pages 929–939, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib56"
+      },
+      "57": {
+        "text": "[57] Akihiko Torii, Relja Arandjelovic, Josef Sivic, Masatoshi Okutomi, and Tomas Pajdla. 24/7 place recognition by view synthesis. In CVPR , pages 1808–1817, 2015.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib57"
+      },
+      "58": {
+        "text": "[58] Julien Valentin, Matthias Nießner, Jamie Shotton, Andrew Fitzgibbon, Shahram Izadi, and Philip HS Torr. Exploiting uncertainty in regression forests for accurate camera relocalization. In CVPR , pages 4400–4408, 2015.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib58"
+      },
+      "59": {
+        "text": "[59] Fangjinhua Wang, Xudong Jiang, Silvano Galliani, Christoph Vogel, and Marc Pollefeys. GLACE: Global local accelerated coordinate encoding. In CVPR , pages 21562–21571, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib59"
+      },
+      "60": {
+        "text": "[60] Qiang Wang. MAD-DR: Map compression for visual localization with matchness aware descriptor dimension reduction. In ECCV , pages 261–278. Springer, 2025.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib60"
+      },
+      "61": {
+        "text": "[61] Tao Xie, Kun Dai, Siyi Lu, Ke Wang, Zhiqiang Jiang, Jinghan Gao, Dedong Liu, Jie Xu, Lijun Zhao, and Ruifeng Li. OFVL-MS: Once for visual localization across multiple indoor scenes. In ICCV , pages 5516–5526, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib61"
+      },
+      "62": {
+        "text": "[62] Shen Yan, Yu Liu, Long Wang, Zehong Shen, Zhen Peng, Haomin Liu, Maojun Zhang, Guofeng Zhang, and Xiaowei Zhou. Long-term visual localization with mobile sensors. In CVPR , pages 17245–17255, 2023.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib62"
+      },
+      "63": {
+        "text": "[63] Vickie Ye, Ruilong Li, Justin Kerr, Matias Turkulainen, Brent Yi, Zhuoyang Pan, Otto Seiskari, Jianbo Ye, Jeffrey Hu, Matthew Tancik, and Angjoo Kanazawa. gsplat: An open-source library for Gaussian splatting. arXiv preprint arXiv:2409.06765 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib63"
+      },
+      "64": {
+        "text": "[64] Lin Yen-Chen, Pete Florence, Jonathan T Barron, Alberto Rodriguez, Phillip Isola, and Tsung-Yi Lin. iNeRF: Inverting neural radiance fields for pose estimation. In IROS , pages 1323–1330. IEEE, 2021.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib64"
+      },
+      "65": {
+        "text": "[65] Hailin Yu, Youji Feng, Weicai Ye, Mingxuan Jiang, Hujun Bao, and Guofeng Zhang. Improving feature-based visual localization by geometry-aided matching. arXiv preprint arXiv:2211.08712 , 2022.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib65"
+      },
+      "66": {
+        "text": "[66] Hongjia Zhai, Xiyu Zhang, Boming Zhao, Hai Li, Yijia He, Zhaopeng Cui, Hujun Bao, and Guofeng Zhang. Splatloc: 3D gaussian splatting-based visual localization for augmented reality. TVCG , pages 1–11, 2025a.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib66"
+      },
+      "67": {
+        "text": "[67] Hongjia Zhai, boming Zhao, Hai Li, Xiaokun Pan, Yijia He, Zhaopeng Cui, Hujun Bao, and Guofeng Zhang. NeuraLoc: Visual localization in neural implicit map with dual complementary features. In ICRA , 2025b.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib67"
+      },
+      "68": {
+        "text": "[68] Boming Zhao, Luwei Yang, Mao Mao, Hujun Bao, and Zhaopeng Cui. PNeRFLoc: Visual localization with point-based neural radiance fields. In AAAI , pages 7450–7459, 2024.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib68"
+      },
+      "69": {
+        "text": "[69] Qunjie Zhou, Maxim Maximov, Or Litany, and Laura Leal-Taixé. The NeRFect match: Exploring NeRF features for visual localization. ECCV , 2024a.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib69"
+      },
+      "70": {
+        "text": "[70] Shijie Zhou, Haoran Chang, Sicheng Jiang, Zhiwen Fan, Zehao Zhu, Dejia Xu, Pradyumna Chari, Suya You, Zhangyang Wang, and Achuta Kadambi. Feature 3DGS: Supercharging 3D gaussian splatting to enable distilled feature fields. In CVPR , pages 21676–21685, 2024b.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib70"
+      },
+      "71": {
+        "text": "[71] Karel Zuiderveld. Contrast limited adaptive histogram equalization. In Graphics Gems IV , page 474–485. Academic Press Professional, Inc., USA, 1994.",
+        "source_anchor": "https://arxiv.org/html/2503.19358v1#bib.bib71"
+      }
+    },
+    "https://arxiv.org/html/2605.07351v1": {
+      "1": {
+        "text": "[1] X. Gao, X. Hou, J. Tang, and H. Cheng (2003) Complete solution classification for the perspective-three-point problem . IEEE transactions on pattern analysis and machine intelligence 25 ( 8 ), pp. 930–943 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib24"
+      },
+      "2": {
+        "text": "[2] M. A. Fischler and R. C. Bolles (1981) Random sample consensus: a paradigm for model fitting with applications to image analysis and automated cartography . Communications of the ACM 24 ( 6 ), pp. 381–395 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib25"
+      },
+      "3": {
+        "text": "[3] B. Kerbl, G. Kopanas, T. Leimkühler, and G. Drettakis (2023) 3D gaussian splatting for real-time radiance field rendering. . ACM Trans. Graph. 42 ( 4 ), pp. 139–1 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib32"
+      },
+      "4": {
+        "text": "[4] J. Kerr, C. M. Kim, K. Goldberg, A. Kanazawa, and M. Tancik (2023) Lerf: language embedded radiance fields . In Proceedings of the IEEE/CVF international conference on computer vision , pp. 19729–19739 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib31"
+      },
+      "5": {
+        "text": "[5] S. Zhou, H. Chang, S. Jiang, Z. Fan, Z. Zhu, D. Xu, P. Chari, S. You, Z. Wang, and A. Kadambi (2024) Feature 3dgs: supercharging 3d gaussian splatting to enable distilled feature fields . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21676–21685 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib30"
+      },
+      "6": {
+        "text": "[6] M. Qin, W. Li, J. Zhou, H. Wang, and H. Pfister (2024) Langsplat: 3d language gaussian splatting . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20051–20060 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib29"
+      },
+      "7": {
+        "text": "[7] G. Sidorov, M. Mohrat, D. Gridusov, R. Rakhimov, and S. Kolyubin (2025) Gsplatloc: grounding keypoint descriptors into 3d gaussian splatting for improved visual localization . In 2025 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 12601–12607 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib35"
+      },
+      "8": {
+        "text": "[8] M. Pietrantoni, G. Csurka, and T. Sattler (2025) Gaussian splatting feature fields for (privacy-preserving) visual localization . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 1082–1092 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib40"
+      },
+      "9": {
+        "text": "[9] Z. Huang, H. Yu, Y. Shentu, J. Yuan, and G. Zhang (2025) From sparse to dense: camera relocalization with scene-specific detector from feature gaussian splatting . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 27059–27069 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib41"
+      },
+      "10": {
+        "text": "[10] A. Kendall, M. Grimes, and R. Cipolla (2015) Posenet: a convolutional network for real-time 6-dof camera relocalization . In Proceedings of the IEEE international conference on computer vision , pp. 2938–2946 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib53"
+      },
+      "11": {
+        "text": "[11] Z. Yang, X. Gao, Y. Sun, Y. Huang, X. Lyu, W. Zhou, S. Jiao, X. Qi, and X. Jin (2024) Spec-Gaussian: anisotropic view-dependent appearance for 3D gaussian splatting . In Advances in Neural Information Processing Systems , Vol. 37 . External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib3"
+      },
+      "12": {
+        "text": "[12] A. Hanson, A. Tu, V. Singla, M. Jayawardhana, M. Zwicker, and T. Goldstein (2025) Pup 3d-gs: principled uncertainty pruning for 3d gaussian splatting . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 5949–5958 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib2"
+      },
+      "13": {
+        "text": "[13] Y. Wu, J. Meng, H. Li, C. Wu, Y. Shi, X. Cheng, C. Zhao, H. Feng, E. Ding, J. Wang, et al. (2024) Opengaussian: towards point-level 3d gaussian-based open vocabulary understanding . Advances in Neural Information Processing Systems 37 , pp. 19114–19138 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib1"
+      },
+      "14": {
+        "text": "[14] K. Jun-Seong, G. Kim, K. Yu-Ji, Y. F. Wang, J. Choe, and T. Oh (2025) Dr. splat: directly referring 3d gaussian splatting via direct language embedding registration . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 14137–14146 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib23"
+      },
+      "15": {
+        "text": "[15] J. Shotton, B. Glocker, C. Zach, S. Izadi, A. Criminisi, and A. Fitzgibbon (2013) Scene coordinate regression forests for camera relocalization in rgb-d images . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 2930–2937 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib55"
+      },
+      "16": {
+        "text": "[16] Y. Li, N. Snavely, and D. P. Huttenlocher (2010) Location recognition using prioritized feature matching . In European conference on computer vision , pp. 791–804 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib27"
+      },
+      "17": {
+        "text": "[17] T. Sattler, B. Leibe, and L. Kobbelt (2016) Efficient & effective prioritized matching for large-scale image-based localization . IEEE transactions on pattern analysis and machine intelligence 39 ( 9 ), pp. 1744–1756 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib52"
+      },
+      "18": {
+        "text": "[18] T. Sattler, A. Torii, J. Sivic, M. Pollefeys, H. Taira, M. Okutomi, and T. Pajdla (2017) Are large-scale 3d models really necessary for accurate visual localization? . In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , pp. 1637–1646 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib51"
+      },
+      "19": {
+        "text": "[19] P. Sarlin, C. Cadena, R. Siegwart, and M. Dymczyk (2019) From coarse to fine: robust hierarchical localization at large scale . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 12716–12725 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib50"
+      },
+      "20": {
+        "text": "[20] M. Humenberger, Y. Cabon, N. Guerin, J. Morat, V. Leroy, J. Revaud, P. Rerole, N. Pion, C. De Souza, and G. Csurka (2020) Robust image retrieval-based visual localization using kapture . arXiv preprint arXiv:2007.13867 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib26"
+      },
+      "21": {
+        "text": "[21] P. Sarlin, A. Unagar, M. Larsson, H. Germain, C. Toft, V. Larsson, M. Pollefeys, V. Lepetit, L. Hammarstrand, F. Kahl, et al. (2021) Back to the feature: learning robust camera localization from pixels to pose . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 3247–3257 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib47"
+      },
+      "22": {
+        "text": "[22] K. T. Giang, S. Song, and S. Jo (2024) Learning to produce semi-dense correspondences for visual localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 19468–19478 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib16"
+      },
+      "23": {
+        "text": "[23] A. Torii, R. Arandjelovic, J. Sivic, M. Okutomi, and T. Pajdla (2015) 24/7 place recognition by view synthesis . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 1808–1817 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib20"
+      },
+      "24": {
+        "text": "[24] R. Arandjelovic, P. Gronat, A. Torii, T. Pajdla, and J. Sivic (2016) NetVLAD: cnn architecture for weakly supervised place recognition . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 5297–5307 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib21"
+      },
+      "25": {
+        "text": "[25] D. G. Lowe (2004) Distinctive image features from scale-invariant keypoints . International journal of computer vision 60 ( 2 ), pp. 91–110 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib17"
+      },
+      "26": {
+        "text": "[26] P. Sarlin, D. DeTone, T. Malisiewicz, and A. Rabinovich (2020) Superglue: learning feature matching with graph neural networks . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 4938–4947 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib49"
+      },
+      "27": {
+        "text": "[27] D. DeTone, T. Malisiewicz, and A. Rabinovich (2018) Superpoint: self-supervised interest point detection and description . In Proceedings of the IEEE conference on computer vision and pattern recognition workshops , pp. 224–236 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib48"
+      },
+      "28": {
+        "text": "[28] E. Brachmann and C. Rother (2018) Learning less is more-6d camera localization via 3d surface regression . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 4654–4662 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib18"
+      },
+      "29": {
+        "text": "[29] E. Brachmann and C. Rother (2021) Visual camera re-localization from rgb and rgb-d images using dsac . IEEE transactions on pattern analysis and machine intelligence 44 ( 9 ), pp. 5847–5865 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib46"
+      },
+      "30": {
+        "text": "[30] E. Brachmann, T. Cavallari, and V. A. Prisacariu (2023) Accelerated coordinate encoding: learning to relocalize in minutes using rgb and poses . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 5044–5053 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib43"
+      },
+      "31": {
+        "text": "[31] F. Wang, X. Jiang, S. Galliani, C. Vogel, and M. Pollefeys (2024) Glace: global local accelerated coordinate encoding . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21562–21571 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib44"
+      },
+      "32": {
+        "text": "[32] A. Kendall and R. Cipolla (2017) Geometric loss functions for camera pose regression with deep learning . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 5974–5983 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib45"
+      },
+      "33": {
+        "text": "[33] S. Brahmbhatt, J. Gu, K. Kim, J. Hays, and J. Kautz (2018) Geometry-aware learning of maps for camera localization . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 2616–2625 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib11"
+      },
+      "34": {
+        "text": "[34] T. Sattler, Q. Zhou, M. Pollefeys, and L. Leal-Taixe (2019) Understanding the limitations of cnn-based absolute camera pose regression . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 3302–3312 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib12"
+      },
+      "35": {
+        "text": "[35] S. Dong, S. Wang, S. Liu, L. Cai, Q. Fan, J. Kannala, and Y. Yang (2025) Reloc3r: large-scale training of relative camera pose regression for generalizable, fast, and accurate visual localization . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 16739–16752 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib15"
+      },
+      "36": {
+        "text": "[36] S. Chen, T. Cavallari, V. A. Prisacariu, and E. Brachmann (2024) Map-relative pose regression for visual re-localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20665–20674 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib28"
+      },
+      "37": {
+        "text": "[37] Y. Shavit, R. Ferens, and Y. Keller (2023) Coarse-to-fine multi-scene pose regression with transformers . IEEE Transactions on Pattern Analysis and Machine Intelligence .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib14"
+      },
+      "38": {
+        "text": "[38] T. Xie, Z. Jiang, S. Li, Y. Zhang, K. Dai, K. Wang, R. Li, and L. Zhao (2023) UFVL-net: a unified framework for visual localization across multiple indoor scenes . IEEE Transactions on Instrumentation and Measurement 72 , pp. 1–16 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib13"
+      },
+      "39": {
+        "text": "[39] M. Lee, J. Kim, and J. Heo (2024) Activating self-attention for multi-scene absolute pose regression . Advances in Neural Information Processing Systems 37 , pp. 38508–38529 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib19"
+      },
+      "40": {
+        "text": "[40] S. Chen, Z. Wang, and V. Prisacariu (2021) Direct-posenet: absolute pose regression with photometric consistency . In 2021 International Conference on 3D Vision (3DV) , pp. 1175–1185 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib7"
+      },
+      "41": {
+        "text": "[41] A. Moreau, N. Piasco, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2022) Lens: localization enhanced by nerf synthesis . In Conference on Robot Learning , pp. 1347–1356 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib6"
+      },
+      "42": {
+        "text": "[42] S. Chen, X. Li, Z. Wang, and V. A. Prisacariu (2022) DFNet: enhance absolute pose regression with direct feature matching . In European Conference on Computer Vision , pp. 1–17 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib38"
+      },
+      "43": {
+        "text": "[43] A. Moreau, N. Piasco, M. Bennehar, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2023) Crossfire: camera relocalization on self-supervised features from an implicit representation . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 252–262 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib39"
+      },
+      "44": {
+        "text": "[44] B. Mildenhall, P. P. Srinivasan, M. Tancik, J. T. Barron, R. Ramamoorthi, and R. Ng (2020) NeRF: representing scenes as neural radiance fields for view synthesis . In European Conference on Computer Vision , pp. 405–421 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib10"
+      },
+      "45": {
+        "text": "[45] R. Martin-Brualla, N. Radwan, M. S. Sajjadi, J. T. Barron, A. Dosovitskiy, and D. Duckworth (2021) Nerf in the wild: neural radiance fields for unconstrained photo collections . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 7210–7219 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib9"
+      },
+      "46": {
+        "text": "[46] T. Müller, A. Evans, C. Schied, and A. Keller (2022) Instant neural graphics primitives with a multiresolution hash encoding . ACM transactions on graphics (TOG) 41 ( 4 ), pp. 1–15 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib8"
+      },
+      "47": {
+        "text": "[47] B. Zhao, L. Yang, M. Mao, H. Bao, and Z. Cui (2024) Pnerfloc: visual localization with point-based neural radiance fields . In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 38 , pp. 7450–7459 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib36"
+      },
+      "48": {
+        "text": "[48] Q. Zhou, M. Maximov, O. Litany, and L. Leal-Taixé (2024) The nerfect match: exploring nerf features for visual localization . In European Conference on Computer Vision , pp. 108–127 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib37"
+      },
+      "49": {
+        "text": "[49] C. Liu, S. Chen, Y. S. Bhalgat, S. HU, M. Cheng, Z. Wang, V. A. Prisacariu, and T. Braud (2025) GS-CPR: efficient camera pose refinement via 3d gaussian splatting . In The Thirteenth International Conference on Learning Representations , External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib42"
+      },
+      "50": {
+        "text": "[50] F. Khatib, D. Moran, G. Trostianetsky, Y. Kasten, M. Galun, and R. Basri (2025) Generalizable visual localization for gaussian splatting scene representations . In Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops ,",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib33"
+      },
+      "51": {
+        "text": "[51] S. Li, S. Tan, B. Chang, J. Zhang, C. Feng, and Y. Li (2025) Adversarial exploitation of data diversity improves visual localization . In International Conference on Computer Vision (ICCV) ,",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib34"
+      },
+      "52": {
+        "text": "[52] J. Wang, Y. Wang, W. Duan, M. Wang, and Y. Qi (2025) 3D gaussian splatting based scene-independent relocalization with unidirectional and bidirectional feature fusion . In The Thirty-ninth Annual Conference on Neural Information Processing Systems , External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib5"
+      },
+      "53": {
+        "text": "[53] J. Marrie, R. Ménégaux, M. Arbel, D. Larlus, and J. Mairal (2025) Ludvig: learning-free uplifting of 2d visual features to gaussian splatting scenes . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 7440–7450 .",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib4"
+      },
+      "54": {
+        "text": "[54] E. Brachmann, M. Humenberger, C. Rother, and T. Sattler (2021) On the Limits of Pseudo Ground Truth in Visual Camera Re-Localisation . In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) ,",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib54"
+      },
+      "55": {
+        "text": "[55] V. Larsson and contributors (2020) PoseLib - Minimal Solvers for Camera Pose Estimation . External Links: Link",
+        "source_anchor": "https://arxiv.org/html/2605.07351v1#bib.bib22"
+      }
+    },
+    "https://arxiv.org/html/2508.18242v1": {
+      "1": {
+        "text": "[1] Relja Arandjelovic, Petr Gronat, Akihiko Torii, Tomas Pajdla, and Josef Sivic. Netvlad: Cnn architecture for weakly supervised place recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 5297–5307, 2016.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib1"
+      },
+      "2": {
+        "text": "[2] Eduardo Arnold, Jamie Wynn, Sara Vicente, Guillermo Garcia-Hernando, Aron Monszpart, Victor Prisacariu, Daniyar Turmukhambetov, and Eric Brachmann. Map-free visual relocalization: Metric pose relative to a single image. In European Conference on Computer Vision , pages 690–708. Springer, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib2"
+      },
+      "3": {
+        "text": "[3] Vassileios Balntas, Shuda Li, and Victor Prisacariu. Relocnet: Continuous metric learning relocalisation using neural nets. In Proceedings of the European Conference on Computer Vision (ECCV) , pages 751–767, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib3"
+      },
+      "4": {
+        "text": "[4] Gabriele Berton, Carlo Masone, and Barbara Caputo. Rethinking visual geo-localization for large-scale applications. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 4878–4888, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib4"
+      },
+      "5": {
+        "text": "[5] Hunter Blanton, Connor Greenwell, Scott Workman, and Nathan Jacobs. Extending absolute pose regression to multiple scenes. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops , pages 38–39, 2020.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib5"
+      },
+      "6": {
+        "text": "[6] Matteo Bortolon, Theodore Tsesmelis, Stuart James, Fabio Poiesi, and Alessio Del Bue. 6dgs: 6d pose estimation from a single image and a 3d gaussian splatting model. arXiv preprint arXiv:2407.15484 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib6"
+      },
+      "7": {
+        "text": "[7] Eric Brachmann and Carsten Rother. Learning less is more-6d camera localization via 3d surface regression. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 4654–4662, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib7"
+      },
+      "8": {
+        "text": "[8] Eric Brachmann and Carsten Rother. Visual camera re-localization from rgb and rgb-d images using dsac. IEEE transactions on pattern analysis and machine intelligence , 44(9):5847–5865, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib8"
+      },
+      "9": {
+        "text": "[9] Eric Brachmann, Alexander Krull, Sebastian Nowozin, Jamie Shotton, Frank Michel, Stefan Gumhold, and Carsten Rother. Dsac-differentiable ransac for camera localization. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 6684–6692, 2017.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib9"
+      },
+      "10": {
+        "text": "[10] Eric Brachmann, Martin Humenberger, Carsten Rother, and Torsten Sattler. On the limits of pseudo ground truth in visual camera re-localisation. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 6218–6228, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib10"
+      },
+      "11": {
+        "text": "[11] Eric Brachmann, Tommaso Cavallari, and Victor Adrian Prisacariu. Accelerated coordinate encoding: Learning to relocalize in minutes using rgb and poses. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 5044–5053, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib11"
+      },
+      "12": {
+        "text": "[12] Samarth Brahmbhatt, Jinwei Gu, Kihwan Kim, James Hays, and Jan Kautz. Geometry-aware learning of maps for camera localization. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 2616–2625, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib12"
+      },
+      "13": {
+        "text": "[13] Federico Camposeco, Andrea Cohen, Marc Pollefeys, and Torsten Sattler. Hybrid scene compression for visual localization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 7653–7662, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib13"
+      },
+      "14": {
+        "text": "[14] Jiazhong Cen, Jiemin Fang, Chen Yang, Lingxi Xie, Xiaopeng Zhang, Wei Shen, and Qi Tian. Segment any 3d gaussians. arXiv preprint arXiv:2312.00860 , 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib14"
+      },
+      "15": {
+        "text": "[15] Jiahao Chang, Yinglin Xu, Yihao Li, Yuantao Chen, Wensen Feng, and Xiaoguang Han. Gaussreg: Fast 3d registration with gaussian splatting. In European Conference on Computer Vision , pages 407–423. Springer, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib15"
+      },
+      "16": {
+        "text": "[16] Hongkai Chen, Zixin Luo, Lei Zhou, Yurun Tian, Mingmin Zhen, Tian Fang, David McKinnon, Yanghai Tsin, and Long Quan. Aspanformer: Detector-free image matching with adaptive span transformer. In Computer Vision–ECCV 2022: 17th European Conference, Tel Aviv, Israel, October 23–27, 2022, Proceedings, Part XXXII , pages 20–36. Springer, 2022a.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib16"
+      },
+      "17": {
+        "text": "[17] Shuai Chen, Xinghui Li, Zirui Wang, and Victor Adrian Prisacariu. Dfnet: Enhance absolute pose regression with direct feature matching. arXiv preprint arXiv:2204.00559 , 2022b.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib17"
+      },
+      "18": {
+        "text": "[18] Shuai Chen, Yash Bhalgat, Xinghui Li, Jiawang Bian, Kejie Li, Zirui Wang, and V Prisacariu. Refinement for absolute pose regression with neural feature synthesis. 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib18"
+      },
+      "19": {
+        "text": "[19] Shuai Chen, Yash Bhalgat, Xinghui Li, Jia-Wang Bian, Kejie Li, Zirui Wang, and Victor Adrian Prisacariu. Neural refinement for absolute pose regression with feature synthesis. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 20987–20996, 2024a.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib19"
+      },
+      "20": {
+        "text": "[20] Yiwen Chen, Zilong Chen, Chi Zhang, Feng Wang, Xiaofeng Yang, Yikai Wang, Zhongang Cai, Lei Yang, Huaping Liu, and Guosheng Lin. Gaussianeditor: Swift and controllable 3d editing with gaussian splatting. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 21476–21485, 2024b.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib20"
+      },
+      "21": {
+        "text": "[21] Bowen Cheng, Ishan Misra, Alexander G Schwing, Alexander Kirillov, and Rohit Girdhar. Masked-attention mask transformer for universal image segmentation. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 1290–1299, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib21"
+      },
+      "22": {
+        "text": "[22] Daniel DeTone, Tomasz Malisiewicz, and Andrew Rabinovich. Superpoint: Self-supervised interest point detection and description. In Proceedings of the IEEE conference on computer vision and pattern recognition workshops , pages 224–236, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib22"
+      },
+      "23": {
+        "text": "[23] Mihai Dusmanu, Ignacio Rocco, Tomas Pajdla, Marc Pollefeys, Josef Sivic, Akihiko Torii, and Torsten Sattler. D2-net: A trainable cnn for joint description and detection of local features. In Proceedings of the ieee/cvf conference on computer vision and pattern recognition , pages 8092–8101, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib23"
+      },
+      "24": {
+        "text": "[24] Sovann En, Alexis Lechervy, and Frédéric Jurie. Rpnet: An end-to-end network for relative camera pose estimation. In Proceedings of the European Conference on Computer Vision (ECCV) Workshops , pages 0–0, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib24"
+      },
+      "25": {
+        "text": "[25] Martin A Fischler and Robert C Bolles. Random sample consensus: a paradigm for model fitting with applications to image analysis and automated cartography. Communications of the ACM , 24(6):381–395, 1981.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib25"
+      },
+      "26": {
+        "text": "[26] Xiao-Shan Gao, Xiao-Rong Hou, Jianliang Tang, and Hang-Fei Cheng. Complete solution classification for the perspective-three-point problem. IEEE transactions on pattern analysis and machine intelligence , 25(8):930–943, 2003.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib26"
+      },
+      "27": {
+        "text": "[27] Hugo Germain, Daniel DeTone, Geoffrey Pascoe, Tanner Schmidt, David Novotny, Richard Newcombe, Chris Sweeney, Richard Szeliski, and Vasileios Balntas. Feature query networks: Neural surface description for camera pose refinement. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 5071–5081, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib27"
+      },
+      "28": {
+        "text": "[28] Ben Glocker, Shahram Izadi, Jamie Shotton, and Antonio Criminisi. Real-time rgb-d camera relocalization. In 2013 IEEE International Symposium on Mixed and Augmented Reality (ISMAR) , pages 173–179. IEEE, 2013.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib28"
+      },
+      "29": {
+        "text": "[29] Stephen Hausler, Sourav Garg, Ming Xu, Michael Milford, and Tobias Fischer. Patch-netvlad: Multi-scale fusion of locally-global descriptors for place recognition. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 14141–14152, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib29"
+      },
+      "30": {
+        "text": "[30] Lionel Heng, Benjamin Choi, Zhaopeng Cui, Marcel Geppert, Sixing Hu, Benson Kuan, Peidong Liu, Rang Nguyen, Ye Chuan Yeo, Andreas Geiger, et al. Project autovision: Localization and 3d scene perception for an autonomous vehicle with a multi-camera system. In 2019 International Conference on Robotics and Automation (ICRA) , pages 4695–4702. IEEE, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib30"
+      },
+      "31": {
+        "text": "[31] Arnold Irschara, Christopher Zach, Jan-Michael Frahm, and Horst Bischof. From structure-from-motion point clouds to fast location recognition. In 2009 IEEE Conference on Computer Vision and Pattern Recognition , pages 2599–2606. IEEE, 2009.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib31"
+      },
+      "32": {
+        "text": "[32] Tong Ke and Stergios I Roumeliotis. An efficient algebraic solution to the perspective-three-point problem. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , pages 7225–7233, 2017.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib32"
+      },
+      "33": {
+        "text": "[33] Alex Kendall and Roberto Cipolla. Geometric loss functions for camera pose regression with deep learning. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 5974–5983, 2017.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib33"
+      },
+      "34": {
+        "text": "[34] Alex Kendall, Matthew Grimes, and Roberto Cipolla. Posenet: A convolutional network for real-time 6-dof camera relocalization. In Proceedings of the IEEE international conference on computer vision , pages 2938–2946, 2015.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib34"
+      },
+      "35": {
+        "text": "[35] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, and George Drettakis. 3d gaussian splatting for real-time radiance field rendering. ACM Transactions on Graphics , 42(4), 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib35"
+      },
+      "36": {
+        "text": "[36] Fadi Khatib, Yuval Margalit, Meirav Galun, and Ronen Basri. Leveraging image matching toward end-to-end relative camera pose regression. In DAGM German Conference on Pattern Recognition , pages 185–201. Springer, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib36"
+      },
+      "37": {
+        "text": "[37] Diederik P Kingma. Adam: A method for stochastic optimization. arXiv preprint arXiv:1412.6980 , 2014.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib37"
+      },
+      "38": {
+        "text": "[38] Laurent Kneip, Davide Scaramuzza, and Roland Siegwart. A novel parametrization of the perspective-three-point problem for a direct computation of absolute camera position and orientation. In CVPR 2011 , pages 2969–2976. IEEE, 2011.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib38"
+      },
+      "39": {
+        "text": "[39] Zakaria Laskar, Iaroslav Melekhov, Assia Benbihi, Shuzhe Wang, and Juho Kannala. Differentiable product quantization for memory efficient camera relocalization. In European Conference on Computer Vision , pages 470–489. Springer, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib39"
+      },
+      "40": {
+        "text": "[40] Vincent Leroy, Yohann Cabon, and Jérôme Revaud. Grounding image matching in 3d with mast3r. arXiv preprint arXiv:2406.09756 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib40"
+      },
+      "41": {
+        "text": "[41] Minhao Li, Zheng Qin, Zhirui Gao, Renjiao Yi, Chenyang Zhu, Yulan Guo, and Kai Xu. 2d3d-matr: 2d-3d matching transformer for detection-free registration between images and point clouds. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 14128–14138, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib41"
+      },
+      "42": {
+        "text": "[42] Xiaotian Li, Shuzhe Wang, Yi Zhao, Jakob Verbeek, and Juho Kannala. Hierarchical scene coordinate classification and regression for visual localization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 11983–11992, 2020.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib42"
+      },
+      "43": {
+        "text": "[43] Yunpeng Li, Noah Snavely, and Daniel P Huttenlocher. Location recognition using prioritized feature matching. In Computer Vision–ECCV 2010: 11th European Conference on Computer Vision, Heraklion, Crete, Greece, September 5-11, 2010, Proceedings, Part II 11 , pages 791–804. Springer, 2010.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib43"
+      },
+      "44": {
+        "text": "[44] Yunzhi Lin, Thomas Müller, Jonathan Tremblay, Bowen Wen, Stephen Tyree, Alex Evans, Patricio A Vela, and Stan Birchfield. Parallel inversion of neural radiance fields for robust pose estimation. In 2023 IEEE International Conference on Robotics and Automation (ICRA) , pages 9377–9384. IEEE, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib44"
+      },
+      "45": {
+        "text": "[45] Changkun Liu, Shuai Chen, Yukun Zhao, Huajian Huang, Victor Prisacariu, and Tristan Braud. Hr-apr: Apr-agnostic framework with uncertainty estimation and hierarchical refinement for camera relocalisation. arXiv preprint arXiv:2402.14371 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib45"
+      },
+      "46": {
+        "text": "[46] Changkun Liu, Shuai Chen, Yash Sanjay Bhalgat, Siyan HU, Ming Cheng, Zirui Wang, Victor Adrian Prisacariu, and Tristan Braud. GS-CPR: Efficient camera pose refinement via 3d gaussian splatting. In The Thirteenth International Conference on Learning Representations , 2025.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib46"
+      },
+      "47": {
+        "text": "[47] Jianlin Liu, Qiang Nie, Yong Liu, and Chengjie Wang. Nerf-loc: Visual localization with conditional neural radiance field. In 2023 IEEE International Conference on Robotics and Automation (ICRA) , pages 9385–9392. IEEE, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib47"
+      },
+      "48": {
+        "text": "[48] Iaroslav Melekhov, Juha Ylioinas, Juho Kannala, and Esa Rahtu. Relative camera pose estimation using convolutional neural networks. In International Conference on Advanced Concepts for Intelligent Vision Systems , pages 675–687. Springer, 2017.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib48"
+      },
+      "49": {
+        "text": "[49] Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik, Jonathan T Barron, Ravi Ramamoorthi, and Ren Ng. Nerf: Representing scenes as neural radiance fields for view synthesis. In European conference on computer vision , pages 405–421. Springer, 2020.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib49"
+      },
+      "50": {
+        "text": "[50] Arthur Moreau, Nathan Piasco, Dzmitry Tsishkou, Bogdan Stanciulescu, and Arnaud de La Fortelle. Lens: Localization enhanced by nerf synthesis. In Conference on Robot Learning , pages 1347–1356. PMLR, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib50"
+      },
+      "51": {
+        "text": "[51] Arthur Moreau, Nathan Piasco, Moussab Bennehar, Dzmitry Tsishkou, Bogdan Stanciulescu, and Arnaud de La Fortelle. Crossfire: Camera relocalization on self-supervised features from an implicit representation. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 252–262, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib51"
+      },
+      "52": {
+        "text": "[52] Maxime Pietrantoni, Gabriela Csurka, Martin Humenberger, and Torsten Sattler. Self-supervised learning of neural implicit feature fields for camera pose refinement. In 2024 International Conference on 3D Vision (3DV) , pages 484–494. IEEE, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib52"
+      },
+      "53": {
+        "text": "[53] Jerome Revaud, Cesar De Souza, Martin Humenberger, and Philippe Weinzaepfel. R2d2: Reliable and repeatable detector and descriptor. Advances in neural information processing systems , 32, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib53"
+      },
+      "54": {
+        "text": "[54] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, et al. Imagenet large scale visual recognition challenge. International journal of computer vision , 115:211–252, 2015.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib54"
+      },
+      "55": {
+        "text": "[55] Paul-Edouard Sarlin, Cesar Cadena, Roland Siegwart, and Marcin Dymczyk. From coarse to fine: Robust hierarchical localization at large scale. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 12716–12725, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib55"
+      },
+      "56": {
+        "text": "[56] Paul-Edouard Sarlin, Daniel DeTone, Tomasz Malisiewicz, and Andrew Rabinovich. Superglue: Learning feature matching with graph neural networks. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 4938–4947, 2020.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib56"
+      },
+      "57": {
+        "text": "[57] Paul-Edouard Sarlin, Ajaykumar Unagar, Mans Larsson, Hugo Germain, Carl Toft, Viktor Larsson, Marc Pollefeys, Vincent Lepetit, Lars Hammarstrand, Fredrik Kahl, et al. Back to the feature: Learning robust camera localization from pixels to pose. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 3247–3257, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib57"
+      },
+      "58": {
+        "text": "[58] Torsten Sattler, Bastian Leibe, and Leif Kobbelt. Efficient & effective prioritized matching for large-scale image-based localization. IEEE transactions on pattern analysis and machine intelligence , 39(9):1744–1756, 2016.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib58"
+      },
+      "59": {
+        "text": "[59] Torsten Sattler, Qunjie Zhou, Marc Pollefeys, and Laura Leal-Taixe. Understanding the limitations of cnn-based absolute camera pose regression. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 3302–3312, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib59"
+      },
+      "60": {
+        "text": "[60] Yoli Shavit, Ron Ferens, and Yosi Keller. Learning multi-scene absolute pose regression with transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 2733–2742, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib60"
+      },
+      "61": {
+        "text": "[61] Jamie Shotton, Ben Glocker, Christopher Zach, Shahram Izadi, Antonio Criminisi, and Andrew Fitzgibbon. Scene coordinate regression forests for camera relocalization in rgb-d images. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 2930–2937, 2013.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib61"
+      },
+      "62": {
+        "text": "[62] Gennady Sidorov, Malik Mohrat, Ksenia Lebedeva, Ruslan Rakhimov, and Sergey Kolyubin. Gsplatloc: Grounding keypoint descriptors into 3d gaussian splatting for improved visual localization. arXiv preprint arXiv:2409.16502 , 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib62"
+      },
+      "63": {
+        "text": "[63] Jiaming Sun, Zehong Shen, Yuang Wang, Hujun Bao, and Xiaowei Zhou. Loftr: Detector-free local feature matching with transformers. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 8922–8931, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib63"
+      },
+      "64": {
+        "text": "[64] Yuan Sun, Xuan Wang, Yunfan Zhang, Jie Zhang, Caigui Jiang, Yu Guo, and Fei Wang. icomma: Inverting 3d gaussians splatting for camera pose estimation via comparing and matching. arXiv preprint arXiv:2312.09031 , 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib64"
+      },
+      "65": {
+        "text": "[65] Hajime Taira, Masatoshi Okutomi, Torsten Sattler, Mircea Cimpoi, Marc Pollefeys, Josef Sivic, Tomas Pajdla, and Akihiko Torii. Inloc: Indoor visual localization with dense matching and view synthesis. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , pages 7199–7209, 2018.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib65"
+      },
+      "66": {
+        "text": "[66] Shitao Tang, Chengzhou Tang, Rui Huang, Siyu Zhu, and Ping Tan. Learning camera localization via dense scene matching. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 1831–1841, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib66"
+      },
+      "67": {
+        "text": "[67] Shitao Tang, Sicong Tang, Andrea Tagliasacchi, Ping Tan, and Yasutaka Furukawa. Neumap: Neural coordinate mapping by auto-transdecoder for camera localization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 929–939, 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib67"
+      },
+      "68": {
+        "text": "[68] Hugues Thomas, Charles R Qi, Jean-Emmanuel Deschaud, Beatriz Marcotegui, François Goulette, and Leonidas J Guibas. Kpconv: Flexible and deformable convolution for point clouds. In Proceedings of the IEEE/CVF international conference on computer vision , pages 6411–6420, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib68"
+      },
+      "69": {
+        "text": "[69] Akihiko Torii, Relja Arandjelovic, Josef Sivic, Masatoshi Okutomi, and Tomas Pajdla. 24/7 place recognition by view synthesis. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 1808–1817, 2015.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib69"
+      },
+      "70": {
+        "text": "[70] Gabriele Trivigno, Carlo Masone, Barbara Caputo, and Torsten Sattler. The unreasonable effectiveness of pre-trained features for camera pose refinement. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 12786–12798, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib70"
+      },
+      "71": {
+        "text": "[71] Jonathan Ventura, Clemens Arth, Gerhard Reitmayr, and Dieter Schmalstieg. Global localization from monocular slam on a mobile phone. IEEE transactions on visualization and computer graphics , 20(4):531–539, 2014.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib71"
+      },
+      "72": {
+        "text": "[72] Florian Walch, Caner Hazirbas, Laura Leal-Taixe, Torsten Sattler, Sebastian Hilsenbeck, and Daniel Cremers. Image-based localization using lstms for structured feature correlation. In Proceedings of the IEEE international conference on computer vision , pages 627–637, 2017.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib72"
+      },
+      "73": {
+        "text": "[73] Fangjinhua Wang, Xudong Jiang, Silvano Galliani, Christoph Vogel, and Marc Pollefeys. Glace: Global local accelerated coordinate encoding. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21562–21571, 2024a.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib73"
+      },
+      "74": {
+        "text": "[74] Qiang Wang. Mad-dr: Map compression for visual localization with matchness aware descriptor dimension reduction. In European Conference on Computer Vision , pages 261–278. Springer, 2024.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib74"
+      },
+      "75": {
+        "text": "[75] Qianqian Wang, Xiaowei Zhou, Bharath Hariharan, and Noah Snavely. Learning feature descriptors using camera pose supervision. In Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August 23–28, 2020, Proceedings, Part I 16 , pages 757–774. Springer, 2020.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib75"
+      },
+      "76": {
+        "text": "[76] Shuzhe Wang, Juho Kannala, and Daniel Barath. Dgc-gnn: Leveraging geometry and color cues for visual descriptor-free 2d-3d matching. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 20881–20891, 2024b.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib76"
+      },
+      "77": {
+        "text": "[77] Andreas Wendel, Arnold Irschara, and Horst Bischof. Natural landmark-based monocular localization for mavs. In 2011 IEEE International Conference on Robotics and Automation , pages 5792–5799. IEEE, 2011.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib77"
+      },
+      "78": {
+        "text": "[78] Luwei Yang, Ziqian Bai, Chengzhou Tang, Honghua Li, Yasutaka Furukawa, and Ping Tan. Sanet: Scene agnostic network for camera localization. In Proceedings of the IEEE/CVF international conference on computer vision , pages 42–51, 2019.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib78"
+      },
+      "79": {
+        "text": "[79] Lin Yen-Chen, Pete Florence, Jonathan T Barron, Alberto Rodriguez, Phillip Isola, and Tsung-Yi Lin. inerf: Inverting neural radiance fields for pose estimation. In 2021 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pages 1323–1330. IEEE, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib79"
+      },
+      "80": {
+        "text": "[80] Chandan Yeshwanth, Yueh-Cheng Liu, Matthias Nießner, and Angela Dai. Scannet++: A high-fidelity dataset of 3d indoor scenes. In Proceedings of the International Conference on Computer Vision (ICCV) , 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib80"
+      },
+      "81": {
+        "text": "[81] Weihao Yu, Chenyang Si, Pan Zhou, Mi Luo, Yichen Zhou, Jiashi Feng, Shuicheng Yan, and Xinchao Wang. Metaformer baselines for vision. IEEE Transactions on Pattern Analysis and Machine Intelligence , 2023.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib81"
+      },
+      "82": {
+        "text": "[82] Qunjie Zhou, Torsten Sattler, and Laura Leal-Taixe. Patch2pix: Epipolar-guided pixel-level correspondences. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 4669–4678, 2021.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib82"
+      },
+      "83": {
+        "text": "[83] Qunjie Zhou, Sérgio Agostinho, Aljoša Ošep, and Laura Leal-Taixé. Is geometry enough for matching in visual localization? In European Conference on Computer Vision , pages 407–425. Springer, 2022.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib83"
+      },
+      "84": {
+        "text": "[84] Qunjie Zhou, Maxim Maximov, Or Litany, and Laura Leal-Taixé. The nerfect match: Exploring nerf features for visual localization. arXiv preprint arXiv:2403.09577 , 2024a.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib84"
+      },
+      "85": {
+        "text": "[85] Shijie Zhou, Haoran Chang, Sicheng Jiang, Zhiwen Fan, Zehao Zhu, Dejia Xu, Pradyumna Chari, Suya You, Zhangyang Wang, and Achuta Kadambi. Feature 3dgs: Supercharging 3d gaussian splatting to enable distilled feature fields. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21676–21685, 2024b.",
+        "source_anchor": "https://arxiv.org/html/2508.18242v1#bib.bib85"
+      }
+    }
+  }
+}

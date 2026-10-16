@@ -1,0 +1,16 @@
+{
+  "full": {
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "query_errors_exact": true,
+    "max_TE_difference_cm": 0.0,
+    "queries": 103
+  },
+  "compact": {
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "query_errors_exact": true,
+    "max_TE_difference_cm": 0.0,
+    "queries": 103
+  }
+}

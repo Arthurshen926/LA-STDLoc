@@ -1,0 +1,24 @@
+{
+  "GPU_launched": false,
+  "errors": 0,
+  "failures": 0,
+  "new_files": {
+    "native_aa_launcher.py": "988e299f59629cfe2047428470c75464c11e07db6c7c5e4b40f4c0dd7b1a1e40",
+    "run_cpu_checks.py": "17cfa7f3d90a1c2163106074dee6357535184ed457fef1444a6b7d3cc1886ad0",
+    "test_native_aa_cpu.py": "d76263913d1998315409991ec090110a18907fd6f5640f43891c5c7474280284"
+  },
+  "original_files": {
+    "/root/STDLoc/experiments/matcha_exact_resume/continuation_gate.py": "c293fcddb5932c1c1bf504fa08ba337d924b9cfc44394e9c7b10f24eb436af81",
+    "/root/STDLoc/experiments/matcha_exact_resume/exact_resume.py": "0605bf41b3c3c6058f1af19de7944ac73ceff3fcdaee7de68f6f6d8572a0720d",
+    "/root/STDLoc/experiments/matcha_exact_resume/freeze_binding.py": "856e78cf7bc415953836630de17d6a8cafa0d435be0e37d30ad91b9454b252a8",
+    "/root/STDLoc/experiments/matcha_exact_resume/native_n8_launcher.py": "9da19683321b4566645a74aa0051e549a99ac1b92046e2537b70fdd4cf3476a9",
+    "/root/STDLoc/experiments/matcha_exact_resume/train_with_charts_exact.py": "92e6fb0cf01af2a1b729f6ffa523eea43d0adb15f09267d10ba915a493f49f43",
+    "/root/STDLoc/experiments/matcha_exact_resume/train_with_charts_observer.py": "36a6bd905df2585e3bd0e6a668ddbbf94ac52f2cd0f14ec6e2069170b48d0b0d"
+  },
+  "passed": true,
+  "production_input_read": false,
+  "schema": "matcha_native_aa_micro_cpu_v1",
+  "seconds": 0.4004136398434639,
+  "tests_run": 10,
+  "torch_imported": false
+}

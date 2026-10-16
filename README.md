@@ -1,5 +1,9 @@
 # AnyGSLoc
 
+> **最新论文与开源复现入口（2026-10-15）**：请先阅读 [release/AnyGSLoc/README.zh-CN.md](release/AnyGSLoc/README.zh-CN.md)。其中已集中整理当前 TRO 论文的代码、数据配置、22 张表的复现步骤和九张图的素材。下文保留原工作区的冻结版本说明；当前论文复现命令应在 `release/AnyGSLoc/` 内执行。
+
+> **当前编辑稿（2026-10-16）**：[editorial r3](paper/AnyGSLoc_TRO_20261016_editorial_r3/README.md)，正文源为 [main.tex](paper/AnyGSLoc_TRO_20261016_editorial_r3/main.tex)。这是活跃编辑稿，不代表其新增表述已完成全部科学一致性验收。复现候选仍以 `release/AnyGSLoc/` 的记录和验证边界为准。历史稿、本机资产与编译输出保留本地，不纳入本次 Git 整理；旧补充稿未作为 r3 的可构建附件发布。
+
 本仓库 `/root/STDLoc` 是唯一项目。`anygsloc/` 是整仓主线代码的 Python 命名空间，**不是另一个项目或仅用于部署的旁支**。
 当前分支 `codex/anygsloc-repository-refactor` 统一离线构图、在线定位、评估；历史开发代码实际迁入 `research/legacy/`。
 

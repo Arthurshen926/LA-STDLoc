@@ -1,0 +1,12 @@
+{
+  "scene": "ShopFacade",
+  "method": "ULFLoc",
+  "queries": 103,
+  "ground_truth_pose_order_exact": true,
+  "max_absolute_difference": {
+    "sparse_TE": 0.0,
+    "sparse_AE": 0.0,
+    "dense_TE": 0.0,
+    "dense_AE": 0.0
+  }
+}

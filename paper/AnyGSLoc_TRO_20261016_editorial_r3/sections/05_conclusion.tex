@@ -1,0 +1,6 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+AnyGSLoc converts a prebuilt Gaussian scene into an explicit localization map whose landmarks are grounded in multiview feature correspondences rather than in the identities of rendering primitives. Gaussian rendering supplies the offline observations and geometric cues; feature tracks determine the exported 3D coordinates and descriptors, and localization-aware selection reduces the map to the landmarks most useful for deployment. The resulting map supports direct 2D--3D localization without accessing the Gaussian renderer online.
+
+Across 24 indoor and outdoor scenes, the Compact map achieves 8.54\,cm/$0.12^\circ$ average scene-median error on Cambridge, with 126.73\,MB of scene-specific storage. Relative to the Full candidate bank, it removes 78.36\% of the landmarks and reduces storage from 585.69 to 126.73\,MB while increasing average scene-median translation error from 7.82 to 8.54\,cm. Controlled studies further support multiview triangulation as the coordinate source and show complementary effects of observation filtering and descriptor fusion. These results indicate that a renderable Gaussian scene can serve as a practical source for a compact, correspondence-based localization map without making the rendering representation itself part of the deployed localizer.

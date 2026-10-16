@@ -1,0 +1,1391 @@
+{
+  "map_source_protocol": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T7/protocol.json",
+  "path_fields": {
+    "full": "sources[scene].full",
+    "compact": "reused[scene].native_compact"
+  },
+  "fallback_protocol": "/mnt/pool/sqy/anygsloc_compact_t6_20261013_v1/protocol.json",
+  "fallback_path_fields": {
+    "full": "sources[scene].full",
+    "compact": "sources[scene].native"
+  },
+  "counts_and_accuracy": {
+    "full": {
+      "macro": {
+        "median_TE_cm": 7.8172848373651505,
+        "median_RE_deg": 0.1167903394334896,
+        "mean_TE_cm": 21.123639665606632,
+        "P95_TE_cm": 43.90733070671557,
+        "R5_pct": 46.9461491446665,
+        "R15_pct": 74.53662196045323,
+        "points": 112199.2,
+        "total_points": 560996,
+        "total_bytes": 585688862,
+        "queries": 1918,
+        "failures": 0,
+        "required_tensor_bytes": 585679824,
+        "artifact_overhead_bytes": 9038,
+        "mean_artifact_bytes_per_scene": 117137772.4,
+        "mean_required_tensor_bytes_per_scene": 117135964.8
+      },
+      "per_scene": {
+        "ShopFacade": {
+          "query_count": 103,
+          "median_TE_cm": 2.0723365247249603,
+          "median_RE_deg": 0.09909420541764989,
+          "mean_TE_cm": 4.561444871507368,
+          "P95_TE_cm": 11.859116852283472,
+          "R5_pct": 84.46601941747572,
+          "R15_pct": 95.14563106796116,
+          "failures": 0,
+          "points": 25953,
+          "bytes": 27096774,
+          "required_tensor_bytes": 27094932,
+          "artifact_overhead_bytes": 1842
+        },
+        "OldHospital": {
+          "query_count": 182,
+          "median_TE_cm": 9.262870997190475,
+          "median_RE_deg": 0.16550582892476315,
+          "mean_TE_cm": 18.24428564050122,
+          "P95_TE_cm": 57.764241695404046,
+          "R5_pct": 35.16483516483517,
+          "R15_pct": 62.637362637362635,
+          "failures": 0,
+          "points": 72909,
+          "bytes": 76118790,
+          "required_tensor_bytes": 76116996,
+          "artifact_overhead_bytes": 1794
+        },
+        "KingsCollege": {
+          "query_count": 343,
+          "median_TE_cm": 16.4797306060791,
+          "median_RE_deg": 0.16588967354992595,
+          "mean_TE_cm": 18.7565534171966,
+          "P95_TE_cm": 47.5752431154251,
+          "R5_pct": 18.950437317784257,
+          "R15_pct": 45.481049562682216,
+          "failures": 0,
+          "points": 84849,
+          "bytes": 88584198,
+          "required_tensor_bytes": 88582356,
+          "artifact_overhead_bytes": 1842
+        },
+        "GreatCourt": {
+          "query_count": 760,
+          "median_TE_cm": 8.115959540009499,
+          "median_RE_deg": 0.04274637373218783,
+          "mean_TE_cm": 59.13166845205093,
+          "P95_TE_cm": 87.86843806505198,
+          "R5_pct": 25.394736842105264,
+          "R15_pct": 73.94736842105263,
+          "failures": 0,
+          "points": 201063,
+          "bytes": 209911558,
+          "required_tensor_bytes": 209909772,
+          "artifact_overhead_bytes": 1786
+        },
+        "StMarysChurch": {
+          "query_count": 530,
+          "median_TE_cm": 3.1555265188217163,
+          "median_RE_deg": 0.11071561554292123,
+          "mean_TE_cm": 4.924245946777035,
+          "P95_TE_cm": 14.469613805413239,
+          "R5_pct": 70.75471698113208,
+          "R15_pct": 95.47169811320755,
+          "failures": 0,
+          "points": 176222,
+          "bytes": 183977542,
+          "required_tensor_bytes": 183975768,
+          "artifact_overhead_bytes": 1774
+        }
+      }
+    },
+    "native_compact": {
+      "macro": {
+        "median_TE_cm": 8.536707945168018,
+        "median_RE_deg": 0.12067559949486413,
+        "mean_TE_cm": 19.739641972886243,
+        "P95_TE_cm": 45.691206231713274,
+        "R5_pct": 44.2497170334465,
+        "R15_pct": 73.1190228442014,
+        "points": 24275.8,
+        "total_points": 121379,
+        "total_bytes": 126728222,
+        "queries": 1918,
+        "failures": 0,
+        "required_tensor_bytes": 126719676,
+        "artifact_overhead_bytes": 8546,
+        "mean_artifact_bytes_per_scene": 25345644.4,
+        "mean_required_tensor_bytes_per_scene": 25343935.2
+      },
+      "per_scene": {
+        "ShopFacade": {
+          "query_count": 103,
+          "median_TE_cm": 2.016928791999817,
+          "median_RE_deg": 0.0916530078016119,
+          "mean_TE_cm": 4.353535386792483,
+          "P95_TE_cm": 9.470948353409762,
+          "R5_pct": 83.49514563106796,
+          "R15_pct": 96.11650485436894,
+          "failures": 0,
+          "points": 12014,
+          "bytes": 12544262,
+          "required_tensor_bytes": 12542616,
+          "artifact_overhead_bytes": 1646
+        },
+        "OldHospital": {
+          "query_count": 182,
+          "median_TE_cm": 10.56637093424797,
+          "median_RE_deg": 0.19255926774215146,
+          "mean_TE_cm": 20.06852809380699,
+          "P95_TE_cm": 62.36989736557005,
+          "R5_pct": 29.120879120879124,
+          "R15_pct": 61.53846153846154,
+          "failures": 0,
+          "points": 9224,
+          "bytes": 9631558,
+          "required_tensor_bytes": 9629856,
+          "artifact_overhead_bytes": 1702
+        },
+        "KingsCollege": {
+          "query_count": 343,
+          "median_TE_cm": 17.399504780769348,
+          "median_RE_deg": 0.15986698082649534,
+          "mean_TE_cm": 18.976235460576877,
+          "P95_TE_cm": 43.82098793983457,
+          "R5_pct": 16.909620991253643,
+          "R15_pct": 43.14868804664723,
+          "failures": 0,
+          "points": 7735,
+          "bytes": 8076998,
+          "required_tensor_bytes": 8075340,
+          "artifact_overhead_bytes": 1658
+        },
+        "GreatCourt": {
+          "query_count": 760,
+          "median_TE_cm": 9.333926439285278,
+          "median_RE_deg": 0.0460253297737301,
+          "mean_TE_cm": 49.07703593149659,
+          "P95_TE_cm": 97.45580881834024,
+          "R5_pct": 23.42105263157895,
+          "R15_pct": 70.26315789473684,
+          "failures": 0,
+          "points": 44631,
+          "bytes": 46596422,
+          "required_tensor_bytes": 46594764,
+          "artifact_overhead_bytes": 1658
+        },
+        "StMarysChurch": {
+          "query_count": 530,
+          "median_TE_cm": 3.3668087795376778,
+          "median_RE_deg": 0.1132734113303319,
+          "mean_TE_cm": 6.222874991758287,
+          "P95_TE_cm": 15.33838868141174,
+          "R5_pct": 68.30188679245282,
+          "R15_pct": 94.52830188679245,
+          "failures": 0,
+          "points": 47775,
+          "bytes": 49878982,
+          "required_tensor_bytes": 49877100,
+          "artifact_overhead_bytes": 1882
+        }
+      }
+    }
+  },
+  "T4": {
+    "title": "Local accuracy and cumulative query-core latency on Cambridge",
+    "headers": [
+      "Method",
+      "Map variant",
+      "Localization stage",
+      "\\shortstack{Mapping-stage\\\\semantics}",
+      "\\shortstack{Median TE / RE\\\\(cm / deg)}",
+      "\\shortstack{Mean TE\\\\(cm)}",
+      "R5 (\\%)",
+      "\\shortstack{Map size\\\\(MB)}",
+      "\\shortstack{Cumulative core\\\\(ms)}"
+    ],
+    "rows": [
+      [
+        "STDLoc",
+        "Native",
+        "Initial",
+        "$\\checkmark$",
+        "11.225 / 0.193",
+        "75.060",
+        "25.93",
+        "2251.31",
+        "\\textbf{343.394}"
+      ],
+      [
+        "STDLoc",
+        "Native",
+        "Refined final",
+        "$\\checkmark$",
+        "8.884 / 0.137",
+        "311.154",
+        "37.43",
+        "2251.31",
+        "518.012"
+      ],
+      [
+        "ULF-Loc",
+        "Native",
+        "Initial",
+        "$\\checkmark$",
+        "12.191 / 0.199",
+        "174.099",
+        "21.78",
+        "519.65",
+        "549.349"
+      ],
+      [
+        "ULF-Loc",
+        "Native",
+        "Refined final",
+        "$\\checkmark$",
+        "8.375 / 0.133",
+        "150.339",
+        "40.22",
+        "519.65",
+        "1574.003"
+      ],
+      [
+        "AnyGSLoc",
+        "Full",
+        "Single stage",
+        "$\\times$",
+        "\\textbf{7.817} / \\textbf{0.117}",
+        "21.124",
+        "\\textbf{46.95}",
+        "585.69",
+        "77.215"
+      ],
+      [
+        "AnyGSLoc",
+        "Compact",
+        "Single stage",
+        "$\\times$",
+        "8.537 / 0.121",
+        "\\textbf{19.740}",
+        "44.25",
+        "\\textbf{126.73}",
+        "\\textbf{74.188}"
+      ]
+    ],
+    "note": "Accuracy uses all 1,918 queries with query semantic masks enabled. Native denotes each baseline's original map; initial/final outputs share its five-scene deployment inventory. Latency is the cumulative core measured from the same localize entry to the indicated pose output within a complete run, not a separately optimized initial-only pipeline. STDLoc includes shared fine/coarse feature preparation; ULF-Loc includes its earlier dense-feature precomputation. All cores include fresh features and native solver budgets; ULF-Loc also retains its non-pose-producing GT-projection/inlier diagnostic. Initialization, decoding, external preprocessing, and segmentation-network inference are excluded; AnyGSLoc mask application is inside its core. Bold accuracy is ranked over all outputs; latency is ranked separately for initial outputs and complete outputs (refined final or single stage). Storage minima are compared across map variants, not duplicated stage inventories.",
+    "blocks": {},
+    "merges": [
+      {
+        "row": 0,
+        "col": 0,
+        "count": 2
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "count": 2
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "count": 2
+      },
+      {
+        "row": 0,
+        "col": 7,
+        "count": 2
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "count": 2
+      },
+      {
+        "row": 2,
+        "col": 1,
+        "count": 2
+      },
+      {
+        "row": 2,
+        "col": 3,
+        "count": 2
+      },
+      {
+        "row": 2,
+        "col": 7,
+        "count": 2
+      },
+      {
+        "row": 4,
+        "col": 0,
+        "count": 2
+      }
+    ],
+    "path": "tables/T4.tex",
+    "label": "tab:t4",
+    "supplement": false,
+    "column_groups": [],
+    "best_cells": [
+      {
+        "row": 0,
+        "col": 8,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 4,
+        "col": 4,
+        "components": [
+          0,
+          1
+        ]
+      },
+      {
+        "row": 4,
+        "col": 6,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 5,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 7,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 8,
+        "components": [
+          0
+        ]
+      }
+    ],
+    "underline_cells": [],
+    "numeric_source_values": [
+      {
+        "4": [
+          11.224500499665737,
+          0.19254524317599048
+        ],
+        "5": [
+          75.06020337541594
+        ],
+        "6": [
+          25.932584480137287
+        ],
+        "7": [
+          2251.314464
+        ],
+        "8": [
+          343.3940676351
+        ]
+      },
+      {
+        "4": [
+          8.884372040629387,
+          0.13720006358387177
+        ],
+        "5": [
+          311.1541097874125
+        ],
+        "6": [
+          37.42627655181683
+        ],
+        "7": [
+          2251.314464
+        ],
+        "8": [
+          518.01246522367
+        ]
+      },
+      {
+        "4": [
+          12.190516516566277,
+          0.19924281928738852
+        ],
+        "5": [
+          174.09860228800403
+        ],
+        "6": [
+          21.783480280290895
+        ],
+        "7": [
+          519.652485
+        ],
+        "8": [
+          549.349153229
+        ]
+      },
+      {
+        "4": [
+          8.374833762645721,
+          0.13254630418772367
+        ],
+        "5": [
+          150.33901133989298
+        ],
+        "6": [
+          40.22261049397447
+        ],
+        "7": [
+          519.652485
+        ],
+        "8": [
+          1574.002956582854
+        ]
+      },
+      {
+        "4": [
+          7.8172848373651505,
+          0.1167903394334896
+        ],
+        "5": [
+          21.123639665606632
+        ],
+        "6": [
+          46.9461491446665
+        ],
+        "7": [
+          585.688862
+        ],
+        "8": [
+          77.21547148128352
+        ]
+      },
+      {
+        "4": [
+          8.536707945168018,
+          0.12067559949486413
+        ],
+        "5": [
+          19.739641972886243
+        ],
+        "6": [
+          44.2497170334465
+        ],
+        "7": [
+          126.728222
+        ],
+        "8": [
+          74.18789603312811
+        ]
+      }
+    ],
+    "comparison_groups": [
+      {
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "directions": {
+          "4": "min",
+          "5": "min",
+          "6": "max"
+        }
+      },
+      {
+        "rows": [
+          0,
+          2,
+          4,
+          5
+        ],
+        "directions": {
+          "7": "min"
+        }
+      },
+      {
+        "rows": [
+          0,
+          2
+        ],
+        "directions": {
+          "8": "min"
+        }
+      },
+      {
+        "rows": [
+          1,
+          3,
+          4,
+          5
+        ],
+        "directions": {
+          "8": "min"
+        }
+      }
+    ]
+  },
+  "S_timing": {
+    "title": "Matched query-core and complete-frame latency",
+    "headers": [
+      "Configuration",
+      "Core mean",
+      "p50",
+      "P90",
+      "P95",
+      "Frame mean",
+      "p50",
+      "P90",
+      "P95"
+    ],
+    "rows": [
+      [
+        "STDLoc\\_off",
+        "583.101",
+        "416.325",
+        "1256.923",
+        "1412.536",
+        "789.051",
+        "640.440",
+        "1423.522",
+        "1707.632"
+      ],
+      [
+        "STDLoc\\_on",
+        "518.012",
+        "408.637",
+        "1173.683",
+        "1325.507",
+        "724.977",
+        "613.703",
+        "1378.414",
+        "1513.549"
+      ],
+      [
+        "ULFLoc\\_off",
+        "1515.196",
+        "1465.322",
+        "2245.286",
+        "2435.227",
+        "1692.281",
+        "1620.878",
+        "2417.727",
+        "2722.494"
+      ],
+      [
+        "ULFLoc\\_on",
+        "1574.003",
+        "1516.796",
+        "2314.186",
+        "2577.043",
+        "1764.819",
+        "1679.643",
+        "2517.317",
+        "2841.447"
+      ],
+      [
+        "AnyGSLoc\\_full",
+        "77.215",
+        "49.031",
+        "205.944",
+        "\\textbf{242.680}",
+        "\\textbf{195.904}",
+        "135.675",
+        "384.722",
+        "451.218"
+      ],
+      [
+        "AnyGSLoc\\_compact",
+        "\\textbf{74.188}",
+        "\\textbf{43.727}",
+        "\\textbf{200.119}",
+        "251.494",
+        "198.945",
+        "\\textbf{134.881}",
+        "\\textbf{381.769}",
+        "\\textbf{436.476}"
+      ]
+    ],
+    "note": "All entries are ms. Each configuration has 1,500 measured queries (five scenes, three fresh processes, 100 queries per process). Means are scene-equal; percentiles pool the 1,500 measured observations. Warm-ups are excluded. Frame includes fresh RGB decoding, camera materialization, preprocessing, and mask work. Precomputed-mask network generation is excluded, not assigned zero cost. Native core retains feature/solver budgets and ULF-Loc diagnostics. Bold marks the smallest value in each column across complete configurations.",
+    "blocks": {},
+    "merges": [],
+    "path": "supplement_tables/S_timing.tex",
+    "label": "tab:s_timing",
+    "supplement": true,
+    "column_groups": [],
+    "best_cells": [
+      {
+        "row": 4,
+        "col": 4,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 4,
+        "col": 5,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 1,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 2,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 3,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 6,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 7,
+        "components": [
+          0
+        ]
+      },
+      {
+        "row": 5,
+        "col": 8,
+        "components": [
+          0
+        ]
+      }
+    ],
+    "underline_cells": [],
+    "numeric_source_values": [
+      {
+        "1": [
+          583.1008419270316
+        ],
+        "2": [
+          416.324857622385
+        ],
+        "3": [
+          1256.9227293133727
+        ],
+        "4": [
+          1412.5357589684425
+        ],
+        "5": [
+          789.0506095737219
+        ],
+        "6": [
+          640.4404118657112
+        ],
+        "7": [
+          1423.5221484676003
+        ],
+        "8": [
+          1707.6324120163915
+        ]
+      },
+      {
+        "1": [
+          518.01246522367
+        ],
+        "2": [
+          408.63695461302996
+        ],
+        "3": [
+          1173.6832594498985
+        ],
+        "4": [
+          1325.5069553852081
+        ],
+        "5": [
+          724.9768449515104
+        ],
+        "6": [
+          613.7032881379128
+        ],
+        "7": [
+          1378.4143548458812
+        ],
+        "8": [
+          1513.5486878454685
+        ]
+      },
+      {
+        "1": [
+          1515.196376228084
+        ],
+        "2": [
+          1465.3223659843206
+        ],
+        "3": [
+          2245.2864464372396
+        ],
+        "4": [
+          2435.226525366306
+        ],
+        "5": [
+          1692.2806703945
+        ],
+        "6": [
+          1620.878228917718
+        ],
+        "7": [
+          2417.726525850594
+        ],
+        "8": [
+          2722.4940305575724
+        ]
+      },
+      {
+        "1": [
+          1574.0029565828543
+        ],
+        "2": [
+          1516.796162351966
+        ],
+        "3": [
+          2314.1857771202917
+        ],
+        "4": [
+          2577.0426512695844
+        ],
+        "5": [
+          1764.8187491223216
+        ],
+        "6": [
+          1679.6430004760623
+        ],
+        "7": [
+          2517.3171553760767
+        ],
+        "8": [
+          2841.4472892880435
+        ]
+      },
+      {
+        "1": [
+          77.2154714812835
+        ],
+        "2": [
+          49.030872993171215
+        ],
+        "3": [
+          205.94433844089497
+        ],
+        "4": [
+          242.68021266907448
+        ],
+        "5": [
+          195.90434849883118
+        ],
+        "6": [
+          135.67472901195288
+        ],
+        "7": [
+          384.722227975726
+        ],
+        "8": [
+          451.2183392420408
+        ]
+      },
+      {
+        "1": [
+          74.1878960331281
+        ],
+        "2": [
+          43.72735694050789
+        ],
+        "3": [
+          200.11929962784046
+        ],
+        "4": [
+          251.49388117715716
+        ],
+        "5": [
+          198.944825326403
+        ],
+        "6": [
+          134.88123193383217
+        ],
+        "7": [
+          381.7687140777706
+        ],
+        "8": [
+          436.4758721552788
+        ]
+      }
+    ],
+    "comparison_groups": [
+      {
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "directions": {
+          "1": "min",
+          "2": "min",
+          "3": "min",
+          "4": "min",
+          "5": "min",
+          "6": "min",
+          "7": "min",
+          "8": "min"
+        }
+      }
+    ]
+  },
+  "deployment_points": [
+    {
+      "label": "STDLoc (native, sem. on)",
+      "R5_pct": 37.42627655181683,
+      "storage_MB": 2251.314464,
+      "core_ms": 518.01246522367,
+      "frame_ms": 724.9768449515104
+    },
+    {
+      "label": "ULF-Loc (native, sem. on)",
+      "R5_pct": 40.22261049397447,
+      "storage_MB": 519.652485,
+      "core_ms": 1574.0029565828543,
+      "frame_ms": 1764.8187491223216
+    },
+    {
+      "label": "AnyGSLoc Full",
+      "R5_pct": 46.9461491446665,
+      "storage_MB": 585.688862,
+      "core_ms": 77.2154714812835,
+      "frame_ms": 195.90434849883118
+    },
+    {
+      "label": "AnyGSLoc Compact",
+      "R5_pct": 44.2497170334465,
+      "storage_MB": 126.728222,
+      "core_ms": 74.1878960331281,
+      "frame_ms": 198.944825326403
+    }
+  ],
+  "timing_scope": {
+    "version": "v7",
+    "seed": 2026,
+    "cpu_threads": 4,
+    "gpu": "RTX 3090",
+    "means": "scene-equal per query",
+    "measured_queries": 1500,
+    "query_masks": "precomputed",
+    "core": "fresh features and native budgets; ULF GT diagnostics retained",
+    "frame": "adds decoding, camera and preprocessing; excludes segmentation-network inference"
+  },
+  "storage_scope": {
+    "unit": "decimal MB (1e6 bytes)",
+    "aggregation": "sum across five scenes",
+    "content": "actual scene-specific deployment inventory; shared weights and query inputs excluded"
+  },
+  "maps": {
+    "ShopFacade": {
+      "sources": {
+        "cache": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/observations/ShopFacade/pure_gs.pt",
+          "sha256": "1afb6edd933aa8a758fd3dfed82f2c297e3f3a211d7e8eb484fb9315d965872b",
+          "bytes": 502706988
+        },
+        "state": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/states/ShopFacade/new_full_state.pt",
+          "sha256": "9fab36c5478d808384da1884df9c60ddda4dfd0b7e24ab418b053c69075f990a",
+          "bytes": 87635436
+        },
+        "full": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/maps/ShopFacade/pure_gs/anygsloc/full/deployment_map.pt",
+          "sha256": "fb7f46cb0dbc3378721d870848c6bb183a15118c0dbedd279286e046185ba435",
+          "bytes": 27096774,
+          "count": 25953
+        }
+      },
+      "filter_off_construction": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/ShopFacade/construction.pt",
+        "sha256": "0dfee9d7cc3d0613f424922522e8d1867fa282c460a4eab0280075eeccaa8a6b",
+        "bytes": 63475849
+      },
+      "T6_full_maps": {
+        "filter_on_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/ShopFacade/filter_on_single/deployment_map.pt",
+          "sha256": "6fb92f2021a662040422e893b9c8729daf60d0388363e4633c215f0fb9b79216",
+          "bytes": 27096774,
+          "count": 25953
+        },
+        "filter_off_fused": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/ShopFacade/filter_off_fused/deployment_map.pt",
+          "sha256": "37a593973bf0b49fd96361e88a30a23d8203d070ca124cf9004a25dfb58c3105",
+          "bytes": 34170950,
+          "count": 32729
+        },
+        "filter_off_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/ShopFacade/filter_off_single/deployment_map.pt",
+          "sha256": "98a2aab1577c8b694ecae2a5353492893b4f7087797504bc022d427f58cd81fe",
+          "bytes": 34170950,
+          "count": 32729
+        }
+      },
+      "native_compact": {
+        "map": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/ShopFacade/new_native/deployment_map.pt",
+          "sha256": "940c1ba9f9393289f2dd89bc237fddd232df9c178975ef26ecfa54e392382cfd",
+          "bytes": 12544262,
+          "count": 12014,
+          "rows": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/ShopFacade/new_native/deployment_map.source_rows.npy",
+            "sha256": "cf74b8e2e83d37e0d770715c05e80ab3582e84d0f63c3ff1c9d26234452d5660",
+            "bytes": 96240
+          }
+        },
+        "evaluation_folder": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native",
+        "files": {
+          "results.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/results.json",
+            "sha256": "6fe862f907771cbb4dec8ba35794fff036992dafca050a8b4b11b9ad0b379237",
+            "bytes": 73207
+          },
+          "summary.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/summary.json",
+            "sha256": "8a71b92478031d7b5ff648a46383fb894c522d28e395a9fcdb7c4a92e11f1950",
+            "bytes": 894
+          },
+          "manifest.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/manifest.json",
+            "sha256": "116039525767bc917e17ee42f89e919180140d64d0803cfc3f6041f832d0b550",
+            "bytes": 3752
+          },
+          "attestation.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/attestation.json",
+            "sha256": "89f8b9613bf8cffdbe9924da355ff84f4de96cde07f9bf5f734faae46b1d2ead",
+            "bytes": 1124
+          }
+        }
+      },
+      "native_trace": {
+        "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/selection/ShopFacade/native_trace.pt",
+        "sha256": "5e7b53641458e7c7b067b7f3257f70829fd4d0f6faff95cb361160e280535bd1",
+        "bytes": 804767
+      },
+      "query_snapshot": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/query_inputs/ShopFacade.json",
+        "sha256": "24e96859bee16266e54b8334444369ea7b02c9cfc94ace85162baf398cec6ebb",
+        "bytes": 351207
+      },
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/ShopFacade",
+      "full_counts": {
+        "on": 25953,
+        "off": 32729
+      }
+    },
+    "OldHospital": {
+      "sources": {
+        "cache": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/observations/OldHospital/pure_gs.pt",
+          "sha256": "cbe789ec7beb7e1e2e66068e68dacff52fbe7a5a92d22cd6468f11c6d8b69d18",
+          "bytes": 1947718052
+        },
+        "state": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/states/OldHospital/new_full_state.pt",
+          "sha256": "863aa167d52df74317c04fd712d2f333aa1a66b2e76cf07d0d3627305031e2cb",
+          "bytes": 256599660
+        },
+        "full": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/maps/OldHospital/pure_gs/anygsloc/full/deployment_map.pt",
+          "sha256": "c3728a68f75d4d36fc6cc9e7e6fd0c19059eb4166458aff4f0c7a2ad9fedfdd9",
+          "bytes": 76118790,
+          "count": 72909
+        }
+      },
+      "filter_off_construction": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/OldHospital/construction.pt",
+        "sha256": "93f8a7a3ef757bf9bdaf8cdbf7fe901a1f7a9d3ea9b227c2ca854d5d481d0b7f",
+        "bytes": 203891721
+      },
+      "T6_full_maps": {
+        "filter_on_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/OldHospital/filter_on_single/deployment_map.pt",
+          "sha256": "283c0967fc47e367c8ae6dfec5c6d9a4d9dc004becf431da41866894b55c6b02",
+          "bytes": 76118790,
+          "count": 72909
+        },
+        "filter_off_fused": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/OldHospital/filter_off_fused/deployment_map.pt",
+          "sha256": "1a44be59af6e2a605399fd2801e029ceddcdf5dbf7b18020f40844758e94240d",
+          "bytes": 83312006,
+          "count": 79799
+        },
+        "filter_off_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/OldHospital/filter_off_single/deployment_map.pt",
+          "sha256": "87f89687e0db1c077c6fab9316f3978a536505888ae312d51ffa6669e23340f9",
+          "bytes": 83312006,
+          "count": 79799
+        }
+      },
+      "native_compact": {
+        "map": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/OldHospital/new_native/deployment_map.pt",
+          "sha256": "aef7197de5acbf7ba74dd5f02651c43ed7f326486973876c9a34e1a9eb463721",
+          "bytes": 9631558,
+          "count": 9224,
+          "rows": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/OldHospital/new_native/deployment_map.source_rows.npy",
+            "sha256": "cde354f8f2f2f56f2876b0776d4745a8cd40764738749095dc57ab7f7d6a47c5",
+            "bytes": 73920
+          }
+        },
+        "evaluation_folder": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native",
+        "files": {
+          "results.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/results.json",
+            "sha256": "66f7daaf2eb1a9fbf7ac3cd516a65ddd16d144ca59bc2204d02beeadf25cd982",
+            "bytes": 129032
+          },
+          "summary.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/summary.json",
+            "sha256": "a43d8bd54b40a2f9378751bb0eaaa187cb7ffd8e9e6a864bf2e9515a73fc1c98",
+            "bytes": 911
+          },
+          "manifest.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/manifest.json",
+            "sha256": "741eff3b618f9d76e18aac9f0167901c90c20e0e69e27ad809f522d3c1c29df9",
+            "bytes": 5886
+          },
+          "attestation.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/attestation.json",
+            "sha256": "8c90ec60aede7cf566e5981dd3c990b638e992c88ad10396768bf50810a3eb5e",
+            "bytes": 1129
+          }
+        }
+      },
+      "native_trace": {
+        "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/selection/OldHospital/native_trace.pt",
+        "sha256": "3d5577e09500b4141fd1a74fc64109136f262dcb6acb7670116a1b435c47218c",
+        "bytes": 737375
+      },
+      "query_snapshot": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/query_inputs/OldHospital.json",
+        "sha256": "029b6605e3230720d061aebc9c1d6be4626b9678b6c2f451284d7ab9099d2a36",
+        "bytes": 1143956
+      },
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/OldHospital",
+      "full_counts": {
+        "on": 72909,
+        "off": 79799
+      }
+    },
+    "KingsCollege": {
+      "sources": {
+        "cache": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/observations/KingsCollege/pure_gs.pt",
+          "sha256": "715fda57a238fc3a0b2b2685e668ccc0f15ea81f1e9f120a9503e83385d27cc9",
+          "bytes": 2655000393
+        },
+        "state": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/states/KingsCollege/new_full_state.pt",
+          "sha256": "466b5f2d3a3381050c8fbfe3b6763e83429396bef8d1e00c21ca817a99d329c2",
+          "bytes": 304418924
+        },
+        "full": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/maps/KingsCollege/pure_gs/anygsloc/full/deployment_map.pt",
+          "sha256": "8e2d425d0d14037948774cdf22b8fc4078134b5c118271ddba602baa4bb008f5",
+          "bytes": 88584198,
+          "count": 84849
+        }
+      },
+      "filter_off_construction": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/KingsCollege/construction.pt",
+        "sha256": "57f263dacc2b4668402e54f519d94fa1f657cc390aa32f067796ec61a8edc377",
+        "bytes": 270907145
+      },
+      "T6_full_maps": {
+        "filter_on_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/KingsCollege/filter_on_single/deployment_map.pt",
+          "sha256": "b60a812ff77854ac11dac0d1271daf6d82b00b8016131d37ed2883e972b11d7e",
+          "bytes": 88584198,
+          "count": 84849
+        },
+        "filter_off_fused": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/KingsCollege/filter_off_fused/deployment_map.pt",
+          "sha256": "88a07c55acaa759fb28d8ddcbe53b54a88f838d22770aeb0e197cfd810239204",
+          "bytes": 99077446,
+          "count": 94900
+        },
+        "filter_off_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/KingsCollege/filter_off_single/deployment_map.pt",
+          "sha256": "f5a3c0e4087fc91d364af02ba7c7b45e1a24b16b88cb08118ce6fcd93c3e9264",
+          "bytes": 99077446,
+          "count": 94900
+        }
+      },
+      "native_compact": {
+        "map": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/KingsCollege/new_native/deployment_map.pt",
+          "sha256": "4fe82024673ab1363a85f2a47de68884cdcf2c428b1747a5cb04aaaacc61afb0",
+          "bytes": 8076998,
+          "count": 7735,
+          "rows": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/KingsCollege/new_native/deployment_map.source_rows.npy",
+            "sha256": "69012e7faf0b8da3564286b74185ff9195beb92e05ee2e634f0cea699f4700e8",
+            "bytes": 62008
+          }
+        },
+        "evaluation_folder": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native",
+        "files": {
+          "results.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/results.json",
+            "sha256": "340ec167ba670092de79b8f83490f97daed96181311829939c956ee1aa004556",
+            "bytes": 243352
+          },
+          "summary.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/summary.json",
+            "sha256": "b3d900cd8f4cbb36f6db6ecbb71df0e728b7efbd7dc5b7cee35284747e584f98",
+            "bytes": 912
+          },
+          "manifest.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/manifest.json",
+            "sha256": "a5163d75bd4118d6aab6e1e92a711895d1b195cc0b9632b59957e99954d6a9a5",
+            "bytes": 10235
+          },
+          "attestation.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/attestation.json",
+            "sha256": "a949b565017659ecaa4b2dd9060d051cdf0c9ff8834a639352d02296d9181c82",
+            "bytes": 1134
+          }
+        }
+      },
+      "native_trace": {
+        "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/selection/KingsCollege/native_trace.pt",
+        "sha256": "0f97f381da1407cdcd422da1dd9337bfea2de5adaa406da52bdf858da6bbe749",
+        "bytes": 674399
+      },
+      "query_snapshot": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/query_inputs/KingsCollege.json",
+        "sha256": "72c0eb8d4406100b37daa4af3e0e9221f1bf523339d0c436ea1f790c94c8ae5c",
+        "bytes": 1651449
+      },
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/KingsCollege",
+      "full_counts": {
+        "on": 84849,
+        "off": 94900
+      }
+    },
+    "GreatCourt": {
+      "sources": {
+        "cache": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/observations/GreatCourt/pure_gs.pt",
+          "sha256": "90030cfcfb7d00f31be258728cb849e92a335a7c4f095b68abbd4563ef5557d6",
+          "bytes": 3331823177
+        },
+        "state": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/states/GreatCourt/new_full_state.pt",
+          "sha256": "89586c4ebacc0910d8c4212cd614df2c04e02b360b752014b82b4700f51c07be",
+          "bytes": 684013356
+        },
+        "full": {
+          "path": "/mnt/pool/sqy/anygsloc_input_matrix_vanilla3d_20261011_v3/maps/GreatCourt/pure_gs/anygsloc/full/deployment_map.pt",
+          "sha256": "fbf58f87f80c72f9f52d1c756cf4c5e12380d355c617e1764909ec64c645d895",
+          "bytes": 209911558,
+          "count": 201063
+        }
+      },
+      "filter_off_construction": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/GreatCourt/construction.pt",
+        "sha256": "881d3ad06ff9d43b78f714e4c95b74fc80a6a0e2c6a510a0ae122213cb54acba",
+        "bytes": 459082557
+      },
+      "T6_full_maps": {
+        "filter_on_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/GreatCourt/filter_on_single/deployment_map.pt",
+          "sha256": "6b5a24ecbab88f7df27c1e1ab8a24aa2399aab4c4901ddbf7b6551899ed3f6f4",
+          "bytes": 209911558,
+          "count": 201063
+        },
+        "filter_off_fused": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/GreatCourt/filter_off_fused/deployment_map.pt",
+          "sha256": "0e45dc5ab16254d06d05591a9d7003d12c9a4209d38b8017faed3ebfa01bc336",
+          "bytes": 230773894,
+          "count": 221046
+        },
+        "filter_off_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/GreatCourt/filter_off_single/deployment_map.pt",
+          "sha256": "a2a096ec92d27a31c23000afcf11209123c999c140bb6f1f7e113480ada8d437",
+          "bytes": 230773894,
+          "count": 221046
+        }
+      },
+      "native_compact": {
+        "map": {
+          "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/GreatCourt/new_native/deployment_map.pt",
+          "sha256": "ab021a52c03e5176f7706b94fec87269085d442433425a704c7c372b88784643",
+          "bytes": 46596422,
+          "count": 44631,
+          "rows": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/maps/GreatCourt/new_native/deployment_map.source_rows.npy",
+            "sha256": "9698d61c9decfa58d46d6d3a58cb05395bc6a75a0c2eab8b14f4b926957b4aec",
+            "bytes": 357176
+          }
+        },
+        "evaluation_folder": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native",
+        "files": {
+          "results.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/results.json",
+            "sha256": "9a766f15bbe1ef20da47e254152001f9ca6bff9512561d80f30586cce82e122b",
+            "bytes": 541421
+          },
+          "summary.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/summary.json",
+            "sha256": "0410a7cabc90f158b4619854699a23aba658cfd600c7d5736df516afc0558f1b",
+            "bytes": 912
+          },
+          "manifest.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/manifest.json",
+            "sha256": "aaad1ef8cab9b54f3755820ced804039bcad28da57750cb6058b4793d3694c18",
+            "bytes": 21492
+          },
+          "attestation.json": {
+            "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/attestation.json",
+            "sha256": "af6e14eac383622c51f32eca34ac0b30e3c37ec8f63ccb0fb50a1239c5dfb6dd",
+            "bytes": 1126
+          }
+        }
+      },
+      "native_trace": {
+        "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/selection/GreatCourt/native_trace.pt",
+        "sha256": "77457921ca19acbb21c77d270cf70c598b6e5ccae20dce8bc663ca451eef39ad",
+        "bytes": 2635231
+      },
+      "query_snapshot": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/query_inputs/GreatCourt.json",
+        "sha256": "e4524ca3a855d5b247048fcb9427b009f9b3b410121610a8c1b4b6df8a9b8a4b",
+        "bytes": 2403544
+      },
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+      "full_counts": {
+        "on": 201063,
+        "off": 221046
+      }
+    },
+    "StMarysChurch": {
+      "sources": {
+        "cache": {
+          "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/new_observations/pure_gs.pt",
+          "sha256": "fbc7332f1f89888c4c1a568fc3f062a1188e4fdc99d6169518d78ddf39bfd070",
+          "bytes": 3236064009
+        },
+        "state": {
+          "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/new_full/anygsloc/selector_state.pt",
+          "sha256": "ad0bd020762bee4e34f062233d940ac84a7a0d989bb4c94c9ded0c64aab18de6",
+          "bytes": 600675692
+        },
+        "full": {
+          "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/new_full/anygsloc/deployment_map.pt",
+          "sha256": "643dc4cc4724f857782fa0c3bb0bb8f8ac4a3a06b890e5269a96e825b564328f",
+          "bytes": 183977542,
+          "count": 176222
+        }
+      },
+      "filter_off_construction": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/StMarysChurch/construction.pt",
+        "sha256": "fd662bf5025c91d5e882cb2b3e7d35abecbd30172435f395123a074a95d1f024",
+        "bytes": 410387017
+      },
+      "T6_full_maps": {
+        "filter_on_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/StMarysChurch/filter_on_single/deployment_map.pt",
+          "sha256": "1754d80fff1cbd794a000bc6463d99821cb036bf34506b6a698604d16d952bc2",
+          "bytes": 183977542,
+          "count": 176222
+        },
+        "filter_off_fused": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/StMarysChurch/filter_off_fused/deployment_map.pt",
+          "sha256": "73ca1a7308a2515b42b2c9b57971998098bcf1516ca31f75eaaa3c7b2fa60873",
+          "bytes": 204918214,
+          "count": 196280
+        },
+        "filter_off_single": {
+          "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/maps/StMarysChurch/filter_off_single/deployment_map.pt",
+          "sha256": "fe06d580425e26f98a30c38315e228e498e2de73fc39229f0a19f95452de2a05",
+          "bytes": 204918214,
+          "count": 196280
+        }
+      },
+      "native_compact": {
+        "map": {
+          "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/maps/new_native/deployment_map.pt",
+          "sha256": "11ee5f3e5bae2e6fad485759a42a4b2639899f909bf8fd61934bf570b9470a63",
+          "bytes": 49878982,
+          "count": 47775,
+          "rows": {
+            "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/maps/new_native/deployment_map.source_rows.npy",
+            "sha256": "1da89b96750bd98c6ea3a750b5db56d499c2c80b173c2a6cad45047ada69cd3b",
+            "bytes": 382328
+          }
+        },
+        "evaluation_folder": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native",
+        "files": {
+          "results.json": {
+            "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/results.json",
+            "sha256": "028857aa928cfa9e868069c3f3b62c3e77f3857b95c2b1d12f49a84359415cc7",
+            "bytes": 376118
+          },
+          "summary.json": {
+            "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/summary.json",
+            "sha256": "1736892ce2f590c8c54fe1e997a2ca39255637a6ed090f55e95c468ae594df0d",
+            "bytes": 910
+          },
+          "manifest.json": {
+            "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/manifest.json",
+            "sha256": "f55744178623cbbc40372765b37237a13b6d218ecfe11471533a1871410123ba",
+            "bytes": 15666
+          },
+          "attestation.json": {
+            "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/attestation.json",
+            "sha256": "61c5603936b5c6b8ff0f666f341849b26b8b1277ca16a77f80d5f083eb00f40f",
+            "bytes": 1315
+          }
+        }
+      },
+      "native_trace": {
+        "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/new_native_trace.pt",
+        "sha256": "3a2b8f342f5e8cddf3d44402a0361a1465a759d403ab553b02e475aa6a344332",
+        "bytes": 2808287
+      },
+      "query_snapshot": {
+        "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T6/query_inputs/StMarysChurch.json",
+        "sha256": "f9438e9dc380dafab6c3ca7917a719b47c4441c8b4440f4bf748dd20ca2a7e5c",
+        "bytes": 2124953
+      },
+      "dataset": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/dataset/StMarysChurch",
+      "full_counts": {
+        "on": 176222,
+        "off": 196280
+      }
+    }
+  }
+}

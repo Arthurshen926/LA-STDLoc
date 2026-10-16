@@ -1,0 +1,23 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Selection progression and equal-budget alternatives}
+\label{tab:t7}
+\begin{tabular}{lcccc}
+\toprule
+Selection & Landmarks & \shortstack{Median TE / RE\\(cm / deg)} & \shortstack{P95 TE\\(cm)} & R15 (\%) \\
+\midrule
+Full reference & 560,996 & \textbf{7.817} / \textbf{0.117} & \textbf{43.907} & \textbf{74.54} \\
+Quality pruning & 96,256 & 8.997 / 0.123 & 57.900 & 71.68 \\
++ Coverage completion & 103,274 & 8.931 / 0.123 & 55.829 & 72.15 \\
++ Pose-aware completion \& cleanup (Compact) & \multirow{4}{*}{121,379} & \underline{8.537} / 0.121 & \underline{45.691} & \underline{73.12} \\
+Spatial sampling &  & 14.222 / 0.197 & 95.939 & 59.04 \\
+Quality Top-K &  & 8.729 / \underline{0.119} & 56.497 & 71.99 \\
+Track-length Top-K &  & 9.144 / 0.124 & 49.582 & 71.93 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize The first four rows follow the Full-to-Compact selection path at natural sizes. Quality and coverage are archived pre-cleanup stages; Compact adds pose-aware completion and its support-preserving cleanup. This combined step is not an isolated pose-term ablation. The last four rows (including Compact once) use identical per-scene budgets, totaling 121,379 landmarks; their point-count cell is shared. All selections preserve retained coordinates and descriptors. Bold denotes the best over all seven rows; underlining denotes the best among the four equal-budget alternatives. Landmark counts are design conditions and are not ranked. P95 is used consistently for the tail; P90, mean TE, and R5 remain in the supplement.\end{minipage}
+\end{table*}
+

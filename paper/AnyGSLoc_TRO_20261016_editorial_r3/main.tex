@@ -1,0 +1,22 @@
+\documentclass[journal]{IEEEtran}
+\input{preamble}
+\input{sections/numbers}
+\title{AnyGSLoc: From Gaussian Splatting to Visual Localization Maps}
+\author{}
+\begin{document}
+\maketitle
+\begin{abstract}
+We study how a prebuilt Gaussian scene can be converted into an explicit map for visual relocalization. AnyGSLoc uses Gaussian rendering only to obtain offline reference observations; multiview feature tracks then determine the 3D landmarks and their descriptors independently of Gaussian primitive identities. Rendering-aware observation filtering controls the evidence entering association, robust triangulation recovers landmark positions, and view-balanced fusion represents their appearance. A localization-aware selector retains landmarks that jointly provide reliable, well-covered, and complementary pose constraints. The resulting map requires no original mapping images or scene-specific feature training and supports direct 2D--3D localization without online rendering. Experiments cover 24 indoor and outdoor scenes and seven Gaussian model configurations. On Cambridge, Compact achieves 8.54\,cm/$0.12^\circ$ average scene-median error at 74.19\,ms localization time. Relative to the Full candidate bank, it removes 78.36\% of the landmarks and reduces five-scene storage from 585.69 to 126.73\,MB, while average scene-median translation error changes from 7.82 to 8.54\,cm.
+\end{abstract}
+\begin{IEEEkeywords}
+Visual localization, Gaussian splatting, map construction, multiview geometry, landmark selection.
+\end{IEEEkeywords}
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_method}
+\input{sections/04_experiments}
+\input{sections/05_conclusion}
+\IEEEtriggeratref{47}
+\bibliographystyle{IEEEtran}
+\bibliography{references,reported_references,related_references}
+\end{document}

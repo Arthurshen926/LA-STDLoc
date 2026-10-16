@@ -1,0 +1,25 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete local baseline comparison}
+\label{tab:s_baselines}
+\begin{tabular}{lccccccc}
+\toprule
+Method & Map sem. & Output & \shortstack{Median TE / RE\\(cm / deg)} & \shortstack{Mean TE\\(cm)} & R5 (\%) & R15 (\%) & Map (MB) \\
+\midrule
+STDLoc & off & Initial & 11.748 / 0.192 & 114.561 & 26.73 & 63.41 & 2228.35 \\
+STDLoc & off & Final & 8.893 / 0.134 & 180.567 & 36.99 & 69.41 & 2228.35 \\
+STDLoc & on & Initial & 11.225 / 0.193 & 75.060 & 25.93 & 64.92 & 2251.31 \\
+STDLoc & on & Final & 8.884 / 0.137 & 311.154 & 37.43 & 70.29 & 2251.31 \\
+ULF-Loc & off & Initial & 12.125 / 0.210 & 270.581 & 21.61 & 61.51 & 527.06 \\
+ULF-Loc & off & Final & 8.474 / 0.141 & 238.658 & 40.03 & 69.77 & 527.06 \\
+ULF-Loc & on & Initial & 12.191 / 0.199 & 174.099 & 21.78 & 61.26 & 519.65 \\
+ULF-Loc & on & Final & 8.375 / 0.133 & 150.339 & 40.22 & 70.44 & 519.65 \\
+AnyGSLoc & off & Full & \textbf{7.817} / \textbf{0.117} & 21.124 & \textbf{46.95} & \textbf{74.54} & 585.69 \\
+AnyGSLoc & off & Compact & 8.537 / 0.121 & \textbf{19.740} & 44.25 & 73.12 & \textbf{126.73} \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Query semantic masks are enabled throughout. All returned poses, zero-inlier cases, and catastrophic errors are retained. Baselines do not expose a common explicit success flag. Initial/final rows share their native final-pipeline deployment inventory. Bold compares the reported outputs; storage minima compare map inventories.\end{minipage}
+\end{table*}

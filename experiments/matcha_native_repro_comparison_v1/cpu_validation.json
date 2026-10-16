@@ -1,0 +1,16 @@
+{
+  "cuda_initialized": false,
+  "errors": 0,
+  "failures": 0,
+  "maximum_fixture_elements": 2000,
+  "passed": true,
+  "production_state_read": false,
+  "schema": "matcha_native_pair_comparator_micro_v1",
+  "seconds": 0.021295567974448204,
+  "source_sha256": {
+    "compare_pair.py": "878ebe90f7c5801fe20f3939d7c56eed973db1f5994633a12f531ccd83bddb7f",
+    "run_cpu_checks.py": "ab12ae12622ad9a663b2f7cd714afa4140493e954a324cc73d82fc201551b4ea",
+    "test_compare_cpu.py": "9a62b15914e35e6623a185580173869426d19e3a2d8e428bd3422e254cc68b33"
+  },
+  "tests_run": 10
+}

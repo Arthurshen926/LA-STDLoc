@@ -1,0 +1,22 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Local accuracy and cumulative query-core latency on Cambridge}
+\label{tab:t4}
+\begin{tabular}{lcccccccc}
+\toprule
+Method & Map variant & Localization stage & \shortstack{Mapping-stage\\semantics} & \shortstack{Median TE / RE\\(cm / deg)} & \shortstack{Mean TE\\(cm)} & R5 (\%) & \shortstack{Map size\\(MB)} & \shortstack{Cumulative core\\(ms)} \\
+\midrule
+\multirow{2}{*}{STDLoc} & \multirow{2}{*}{Native} & Initial & \multirow{2}{*}{$\checkmark$} & 11.225 / 0.193 & 75.060 & 25.93 & \multirow{2}{*}{2251.31} & \textbf{343.394} \\
+ &  & Refined final &  & 8.884 / 0.137 & 311.154 & 37.43 &  & 518.012 \\
+\multirow{2}{*}{ULF-Loc} & \multirow{2}{*}{Native} & Initial & \multirow{2}{*}{$\checkmark$} & 12.191 / 0.199 & 174.099 & 21.78 & \multirow{2}{*}{519.65} & 549.349 \\
+ &  & Refined final &  & 8.375 / 0.133 & 150.339 & 40.22 &  & 1574.003 \\
+\multirow{2}{*}{AnyGSLoc} & Full & Single stage & $\times$ & \textbf{7.817} / \textbf{0.117} & 21.124 & \textbf{46.95} & 585.69 & 77.215 \\
+ & Compact & Single stage & $\times$ & 8.537 / 0.121 & \textbf{19.740} & 44.25 & \textbf{126.73} & \textbf{74.188} \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Accuracy uses all 1,918 queries with query semantic masks enabled. Native denotes each baseline's original map; initial/final outputs share its five-scene deployment inventory. Latency is the cumulative core measured from the same localize entry to the indicated pose output within a complete run, not a separately optimized initial-only pipeline. STDLoc includes shared fine/coarse feature preparation; ULF-Loc includes its earlier dense-feature precomputation. All cores include fresh features and native solver budgets; ULF-Loc also retains its non-pose-producing GT-projection/inlier diagnostic. Initialization, decoding, external preprocessing, and segmentation-network inference are excluded; AnyGSLoc mask application is inside its core. Bold accuracy is ranked over all outputs; latency is ranked separately for initial outputs and complete outputs (refined final or single stage). Storage minima are compared across map variants, not duplicated stage inventories.\end{minipage}
+\end{table*}
+

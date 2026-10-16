@@ -1,0 +1,76 @@
+{
+  "decision": "Q4: Compact is the final method; Full is the uncompressed reference.",
+  "frozen_inputs_sha256": "627781f6e8a12b6bbbfa50e3ee0cab203661fecbf2c511f7675782210f499f2f",
+  "protocol": {
+    "path": "/mnt/pool/sqy/anygsloc_mainline_ablations_20261011_v2/T7/protocol.json",
+    "sha256": "aff7e7e83835d8f64903806f1c9de8095b663fba5c5cbdf5c88269b2940aa5e0"
+  },
+  "scene_order": [
+    "GreatCourt",
+    "KingsCollege",
+    "OldHospital",
+    "ShopFacade",
+    "StMarysChurch"
+  ],
+  "records": {
+    "GreatCourt": {
+      "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/GreatCourt/new_native/summary.json",
+      "sha256": "0410a7cabc90f158b4619854699a23aba658cfd600c7d5736df516afc0558f1b",
+      "median_TE_cm": 9.333926439285278,
+      "median_RE_deg": 0.0460253297737301,
+      "display": [
+        "9.33",
+        "0.05"
+      ]
+    },
+    "KingsCollege": {
+      "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/KingsCollege/new_native/summary.json",
+      "sha256": "b3d900cd8f4cbb36f6db6ecbb71df0e728b7efbd7dc5b7cee35284747e584f98",
+      "median_TE_cm": 17.399504780769348,
+      "median_RE_deg": 0.15986698082649534,
+      "display": [
+        "17.40",
+        "0.16"
+      ]
+    },
+    "OldHospital": {
+      "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/OldHospital/new_native/summary.json",
+      "sha256": "a43d8bd54b40a2f9378751bb0eaaa187cb7ffd8e9e6a864bf2e9515a73fc1c98",
+      "median_TE_cm": 10.56637093424797,
+      "median_RE_deg": 0.19255926774215146,
+      "display": [
+        "10.57",
+        "0.19"
+      ]
+    },
+    "ShopFacade": {
+      "path": "/mnt/pool/sqy/anygsloc_mechanism_stage_a_20261011_v2/evaluations/ShopFacade/new_native/summary.json",
+      "sha256": "8a71b92478031d7b5ff648a46383fb894c522d28e395a9fcdb7c4a92e11f1950",
+      "median_TE_cm": 2.016928791999817,
+      "median_RE_deg": 0.0916530078016119,
+      "display": [
+        "2.02",
+        "0.09"
+      ]
+    },
+    "StMarysChurch": {
+      "path": "/mnt/pool/sqy/anygsloc_stmary_pose_repair_20261011_v2/mechanism/evaluations/new_native/summary.json",
+      "sha256": "1736892ce2f590c8c54fe1e997a2ca39255637a6ed090f55e95c468ae594df0d",
+      "median_TE_cm": 3.3668087795376778,
+      "median_RE_deg": 0.1132734113303319,
+      "display": [
+        "3.37",
+        "0.11"
+      ]
+    }
+  },
+  "rounding": "ROUND_HALF_UP, two decimal places",
+  "mean": {
+    "median_TE_cm": 8.536707945168018,
+    "median_RE_deg": 0.12067559949486413,
+    "display": [
+      "8.54",
+      "0.12"
+    ]
+  }
+}

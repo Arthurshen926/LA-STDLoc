@@ -1,0 +1,23 @@
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.10}
+\caption{Landmark coordinates with shared observations}\label{tab:t5}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcc@{}}
+\toprule
+Coordinate source & \shortstack{Median TE/RE\\(cm/deg)} & R5 (\%) \\
+\midrule
+\multicolumn{3}{l}{\textit{(a) Vanilla 3DGS}} \\
+Gaussian centers & \underline{9.978}/\underline{0.141} & \underline{37.83} \\
+Rendered depth & 94.831/0.878 & 8.04 \\
+Multiview triangulation & \textbf{7.950}/\textbf{0.119} & \textbf{46.21} \\
+\midrule
+\multicolumn{3}{l}{\textit{(b) MAtCha}} \\
+Gaussian centers & 10.509/\underline{0.149} & \underline{35.96} \\
+Rendered depth & \underline{9.459}/0.153 & 31.12 \\
+Multiview triangulation & \textbf{8.511}/\textbf{0.132} & \textbf{42.34} \\
+\bottomrule
+\end{tabular*}
+\tabnote{Tracks, observations, descriptors, and query processing are fixed for each Gaussian model; selection is disabled. The 3DGS and MAtCha common pools contain 421,224 and 352,334 landmarks. Bold/underline: best/second-best within each Gaussian model.}
+\end{table}

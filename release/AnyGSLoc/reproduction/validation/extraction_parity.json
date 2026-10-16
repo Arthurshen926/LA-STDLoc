@@ -1,0 +1,34 @@
+{
+  "native_keypoints": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "native_descriptors": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "native_scores": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "v2_valid": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "native_depth_at_keypoints": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "native_alpha_at_keypoints": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "native_K": {
+    "equal_views": 231,
+    "different_views": 0
+  },
+  "pose_w2c": {
+    "equal_views": 231,
+    "different_views": 0
+  }
+}

@@ -1,0 +1,25 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Error tails of all local outputs}
+\label{tab:s_baseline_tails}
+\begin{tabular}{lccccc}
+\toprule
+Method & Map sem. & Output & Mean TE (cm) & P90 TE (cm) & P95 TE (cm) \\
+\midrule
+STDLoc & off & Initial & 114.561 & 66.412 & 105.068 \\
+STDLoc & off & Final & 180.567 & 58.499 & 96.880 \\
+STDLoc & on & Initial & 75.060 & 58.666 & 88.896 \\
+STDLoc & on & Final & 311.154 & 46.541 & 76.145 \\
+ULF-Loc & off & Initial & 270.581 & 805.121 & 1653.367 \\
+ULF-Loc & off & Final & 238.658 & 565.056 & 1585.516 \\
+ULF-Loc & on & Initial & 174.099 & 195.162 & 1356.747 \\
+ULF-Loc & on & Final & 150.339 & 53.645 & 1233.953 \\
+AnyGSLoc & off & Full & 21.124 & \textbf{29.887} & \textbf{43.907} \\
+AnyGSLoc & off & Compact & \textbf{19.740} & 30.135 & 45.691 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Each statistic is computed per scene and then averaged with equal scene weights. These are not pooled-query percentiles. Bold compares all reported outputs.\end{minipage}
+\end{table*}

@@ -1,0 +1,21 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete geometry-control metrics}
+\label{tab:s_geometry}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & P95 TE & R5 (\%) & R15 (\%) \\
+\midrule
+vanilla3DGS / ray & \textbf{7.950} / \textbf{0.119} & \textbf{15.720} & \textbf{28.398} & \textbf{45.247} & \textbf{46.21} & \textbf{74.14} \\
+vanilla3DGS / depth & 94.831 / 0.878 & 204.095 & 328.668 & 494.840 & 8.04 & 30.30 \\
+vanilla3DGS / center & 9.978 / 0.141 & 21.622 & 35.429 & 56.069 & 37.83 & 68.12 \\
+MAtCha / ray & \textbf{8.511} / \textbf{0.132} & \textbf{72.393} & \textbf{34.558} & \textbf{55.076} & \textbf{42.34} & \textbf{71.25} \\
+MAtCha / depth & 9.459 / 0.153 & 75.946 & 38.912 & 91.712 & 31.12 & 67.76 \\
+MAtCha / center & 10.509 / 0.149 & 90.614 & 45.732 & 146.922 & 35.96 & 65.84 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize TE statistics are in cm. Common-support controls are fixed within each prior. All rows retain the full common pool without selection. Bold is ranked within each prior.\end{minipage}
+\end{table*}

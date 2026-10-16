@@ -1,0 +1,47 @@
+[
+  {
+    "figure": 1,
+    "source": "sources/Fig1_geometry_to_localization.svg",
+    "sha256": "12455316190adf72c497e208050738885ec1aed6bda8de5ad8c570b28f3fec08"
+  },
+  {
+    "figure": 2,
+    "source": "sources/Fig2_overview.svg",
+    "sha256": "d3a6fdfa2d99677d2c235850fc71e08863ad83a2fbd96e84d8ffe065cfcdfbb3"
+  },
+  {
+    "figure": 3,
+    "source": "sources/Fig3_reconstruction.svg",
+    "sha256": "98f01fe23d15718cb736f826e33b7af16674d63f7c44a48f970e7bc7149f14bd"
+  },
+  {
+    "figure": 4,
+    "source": "sources/Fig4_selection.svg",
+    "sha256": "5b388ffbe745b3c76638cade9f2440f3bfea68ffc3218e3deb57a14d5018ed33"
+  },
+  {
+    "figure": 5,
+    "source": "sources/E1_final_localization.svg",
+    "sha256": "bb7117c460cce52d771e7467c6f911dbe5529befe4e8b3ac0218b9d9b9eb3c71"
+  },
+  {
+    "figure": 6,
+    "source": "sources/E2_geometry_source_evidence.svg",
+    "sha256": "789070b29f21df6c608e36d001c82b7c7cec9c55c8eb9012778b6e274504182b"
+  },
+  {
+    "figure": 7,
+    "source": "sources/E3_compact_map.svg",
+    "sha256": "744f1346749fa2abff2e84443cbc779616b6b19691eab314460a9ff323ee1c13"
+  },
+  {
+    "figure": 8,
+    "source": "sources/E4_gaussian_prior.svg",
+    "sha256": "5bb61db4e940795da838f8a1b2547356d9e204c6d9e6a9424d53f1c64c8bcdeb"
+  },
+  {
+    "figure": 9,
+    "source": "sources/E5_deployment.svg",
+    "sha256": "fb341fe0d18f8fbd90660cc41d66ceb1759f9471a9cb96380d404a8b91bfa7ff"
+  }
+]

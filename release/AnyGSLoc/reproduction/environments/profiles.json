@@ -1,0 +1,89 @@
+{
+  "main": {
+    "conda_env": "g4splat",
+    "purpose": "AnyGSLoc mapping, localization, ablations, PSNR, figures",
+    "python": "3.9",
+    "cuda": "11.8",
+    "packages": "environment_g4splat.json",
+    "imports": [
+      "torch",
+      "numpy",
+      "cv2",
+      "PIL.Image",
+      "poselib",
+      "gsplat"
+    ],
+    "validation_scope": "Full/Compact and geometry rebuild + all ShopFacade queries verified; not all scenes rerun"
+  },
+  "native": {
+    "conda_env": "ulfloc_repro",
+    "purpose": "Native STDLoc and ULF-Loc accuracy/timing/training",
+    "python": "3.8",
+    "cuda": "11.8",
+    "packages": "environment_ulfloc_repro.json",
+    "imports": [
+      "torch",
+      "numpy",
+      "cv2",
+      "PIL.Image",
+      "poselib",
+      "gsplat",
+      "simple_knn._C",
+      "pytorch3d.transforms"
+    ],
+    "environment": {
+      "ULFLOC_FUSION_BATCH_SIZE": "1",
+      "CC": "/usr/bin/gcc",
+      "CXX": "/usr/bin/g++",
+      "TORCH_CUDA_ARCH_LIST": "8.6"
+    },
+    "validation_scope": "STDLoc/ULF-Loc ShopFacade initial/refined accuracy and one matched timing round each verified"
+  },
+  "matcha": {
+    "conda_env": "cybersim_agent",
+    "purpose": "Upstream MAtCha native reconstruction; exported priors evaluated in main",
+    "python": "3.9",
+    "cuda": "11.8",
+    "packages": {
+      "torch": "2.0.1+cu118",
+      "numpy": "1.26.4"
+    },
+    "imports": [
+      "torch",
+      "numpy",
+      "diff_surfel_rasterization",
+      "simple_knn._C"
+    ],
+    "validation_scope": "Environment import/runtime check only; upstream training not rerun"
+  },
+  "i3dgs": {
+    "conda_env": "i3dgs",
+    "purpose": "Upstream i3DGS inference/export; downstream AnyGSLoc runs in main",
+    "python": "3.12",
+    "cuda": "11.8",
+    "packages": {
+      "torch": "2.7.1+cu118",
+      "numpy": "1.26.4"
+    },
+    "imports": [
+      "torch",
+      "numpy"
+    ],
+    "validation_scope": "Core environment import/runtime check only; upstream inference not rerun"
+  },
+  "long-lrm": {
+    "conda_env": "long_lrm22",
+    "purpose": "Upstream Long-LRM inference/export; downstream AnyGSLoc runs in main",
+    "python": "3.10",
+    "cuda": "12.1",
+    "packages": {
+      "torch": "2.2.0+cu121",
+      "numpy": "1.25.0"
+    },
+    "imports": [
+      "torch",
+      "numpy"
+    ],
+    "validation_scope": "Core environment import/runtime check only; upstream inference not rerun"
+  }
+}

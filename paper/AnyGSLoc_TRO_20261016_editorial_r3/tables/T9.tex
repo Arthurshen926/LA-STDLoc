@@ -1,0 +1,23 @@
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.10}
+\caption{Availability of original mapping images}\label{tab:t9}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Observations & \shortstack{Median TE/RE\\(cm/deg)} & R5 (\%) & Map (MB) \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Full}} \\
+Gaussian renderings & 7.817/\underline{0.117} & \underline{46.95} & \underline{585.69} \\
+Reference images & \underline{7.249}/0.124 & 43.94 & \textbf{550.22} \\
+Both & \textbf{6.567}/\textbf{0.107} & \textbf{47.52} & 589.70 \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Compact}} \\
+Gaussian renderings & 8.537/\underline{0.121} & \underline{44.25} & \textbf{126.73} \\
+Reference images & \textbf{7.706}/0.123 & 42.31 & 358.08 \\
+Both & \underline{8.282}/\textbf{0.119} & \textbf{45.40} & \underline{163.95} \\
+\bottomrule
+\end{tabular}
+\tabnote{Each source condition has a 2,048-feature budget per reference view; Both splits it equally. Map sizes are natural outcomes of the same selector. Bold/underline: best/second-best within each map variant.}
+\end{table}

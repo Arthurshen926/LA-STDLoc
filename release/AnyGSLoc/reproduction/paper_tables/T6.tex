@@ -1,0 +1,20 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Observation filtering and descriptor fusion on Compact maps}
+\label{tab:t6}
+\begin{tabular}{lcccccc}
+\toprule
+Filter & Fusion & Landmarks & \shortstack{Median TE / RE\\(cm / deg)} & \shortstack{Mean TE\\(cm)} & \shortstack{P95 TE\\(cm)} & R5 (\%) \\
+\midrule
+$\times$ & $\times$ & 116,020 & 8.792 / 0.124 & 20.438 & 55.759 & 41.51 \\
+$\checkmark$ & $\times$ & 121,379 & 8.883 / 0.124 & \textbf{19.178} & 54.814 & 41.59 \\
+$\times$ & $\checkmark$ & 116,020 & \textbf{8.533} / 0.122 & 21.244 & 50.038 & \textbf{44.33} \\
+$\checkmark$ & $\checkmark$ & 121,379 & 8.537 / \textbf{0.121} & 19.740 & \textbf{45.691} & 44.25 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize All rows use vanilla 3DGS, query semantic masks, and the unchanged adaptive Compact selector. Filtering is applied before association; completion retains its positive-depth/opacity checks. Fusion-off uses the first observation in fixed lexicographic order. Within each filtering condition, the selected landmark IDs and coordinates are identical across fusion variants. Filtering changes the candidate graph, so the same selector is rerun at its natural size rather than forced to a shared budget. The corresponding Full-map ablation and complete tails are in the supplement. Bold compares the four Compact configurations; landmark count is a natural selection outcome, not an accuracy ranking.\end{minipage}
+\end{table*}
+

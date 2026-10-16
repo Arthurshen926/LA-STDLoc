@@ -1,0 +1,47 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\setlength{\tabcolsep}{1.5pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{Localization accuracy on 7Scenes. SplitGS-Loc + GS-CPR adds camera-pose refinement to the base SplitGS-Loc estimate.}
+\label{tab:t2}
+\begin{tabular}{lccccccccc}
+\toprule
+Type & Method & Chess & Fire & Heads & Office & Pumpkin & Kitchen & Stairs & Mean \\
+\midrule
+FM & AS (SIFT)~\cite{reported260504730v1bibbib55} & 3 / 0.87 & 2 / 1.01 & 1 / 0.82 & 4 / 1.15 & 7 / 1.69 & 5 / 1.72 & 4 / 1.01 & 3.71 / 1.18 \\
+ & HLoc (SP+SG)~\cite{sarlin2019hloc} & 2.39 / 0.84 & 2.29 / 0.91 & 1.13 / 0.77 & 3.14 / 0.92 & 4.92 / 1.30 & 4.22 / 1.39 & 5.05 / 1.41 & 3.31 / 1.08 \\
+ & DVLAD+R2D2~\cite{reported260504730v1bibbib56} & 2.56 / 0.88 & 2.21 / 0.86 & 0.98 / 0.75 & 3.48 / 1.00 & 4.79 / 1.28 & 4.21 / 1.44 & 4.60 / 1.27 & 3.26 / 1.07 \\
+\midrule
+APR & DFNet~\cite{reported260504730v1bibbib26} & 3 / 1.12 & 6 / 2.30 & 4 / 2.29 & 6 / 1.54 & 7 / 1.92 & 7 / 1.74 & 12 / 2.63 & 6 / 1.93 \\
+ & PMNet~\cite{reported260504730v1bibbib28} & 3 / 1.26 & 4 / 1.76 & 2 / 1.68 & 6 / 1.69 & 7 / 1.96 & 8 / 2.23 & 11 / 2.97 & 6 / 1.93 \\
+ & Marepo~\cite{reported260504730v1bibbib24} & 1.9 / 0.83 & 2.3 / 0.92 & 2.1 / 1.24 & 2.9 / 0.93 & 2.5 / 0.88 & 2.9 / 0.98 & 5.9 / 1.48 & 2.9 / 1.04 \\
+\midrule
+SCR & DSAC*~\cite{brachmann2021dsacstar} & 0.50 / 0.17 & 0.78 / 0.29 & 0.50 / 0.34 & 1.19 / 0.35 & 1.19 / 0.29 & 0.72 / 0.21 & 2.65 / 0.78 & 1.07 / 0.35 \\
+ & ACE~\cite{brachmann2023ace} & 0.55 / 0.18 & 0.83 / 0.33 & 0.53 / 0.33 & 1.05 / 0.29 & 1.06 / 0.22 & 0.77 / 0.21 & 2.89 / 0.81 & 1.10 / 0.34 \\
+ & NeuMap~\cite{reported260504730v1bibbib7} & 2 / 0.81 & 3 / 1.11 & 2 / 1.17 & 3 / 0.98 & 4 / 1.11 & 4 / 1.33 & 4 / 1.12 & 3.14 / 0.95 \\
+ & GLACE~\cite{reported260504730v1bibbib37} & 0.6 / 0.18 & 0.9 / 0.34 & 0.6 / 0.34 & 1.1 / 0.29 & 0.9 / 0.23 & 0.8 / 0.20 & 3.2 / 0.93 & 1.2 / 0.36 \\
+ & NBE+SLD~\cite{reported250319358v1bibbib15} & 0.6 / 0.18 & 0.7 / 0.26 & 0.6 / 0.35 & 1.3 / 0.33 & 1.5 / 0.33 & 0.8 / 0.19 & 2.6 / 0.72 & 1.16 / 0.34 \\
+\midrule
+NeRF/GS & DFNet+NeFeS50~\cite{reported260504730v1bibbib27} & 2 / 0.57 & 2 / 0.74 & 2 / 1.28 & 2 / 0.56 & 2 / 0.55 & 2 / 0.57 & 5 / 1.28 & 2.4 / 0.79 \\
+ & HR-APR~\cite{reported260504730v1bibbib58} & 2 / 0.55 & 2 / 0.75 & 2 / 1.45 & 2 / 0.64 & 2 / 0.62 & 2 / 0.67 & 5 / 1.30 & 2.4 / 0.85 \\
+ & PNeRFLoc~\cite{reported250319358v1bibbib68} & 2 / 0.80 & 2 / 0.88 & 1 / 0.83 & 3 / 1.05 & 6 / 1.51 & 5 / 1.54 & 32 / 5.73 & 7.29 / 1.76 \\
+ & NeRFMatch~\cite{zhou2024nerfmatch} & 0.95 / 0.30 & 1.11 / 0.41 & 1.34 / 0.92 & 3.09 / 0.87 & 2.21 / 0.60 & 1.03 / 0.28 & 9.26 / 1.74 & 2.71 / 0.73 \\
+ & MCLoc~\cite{reported260504730v1bibbib57} & 2 / 0.8 & 3 / 1.4 & 3 / 1.3 & 4 / 1.3 & 5 / 1.6 & 6 / 1.6 & 6 / 2.0 & 4.1 / 1.43 \\
+ & GSplatLoc~\cite{reported260504730v1bibbib47} & 0.39 / 0.13 & 0.91 / 0.29 & 0.94 / 0.50 & 1.41 / 0.32 & 1.41 / 0.26 & 1.32 / 0.29 & 3.44 / 0.82 & 1.40 / 0.37 \\
+ & GSFFs-PR Feature~\cite{reported260504730v1bibbib52} & 0.4 / 0.19 & 0.6 / 0.26 & 0.5 / 0.36 & 1.0 / 0.31 & 1.3 / 0.38 & 0.6 / 0.23 & 25.1 / 0.63 & 4.2 / 0.34 \\
+ & STDLoc~\cite{huang2025stdloc} & 0.46 / 0.15 & 0.57 / 0.24 & 0.45 / 0.26 & 0.86 / 0.24 & 0.93 / 0.21 & 0.63 / 0.19 & 1.42 / 0.41 & 0.76 / 0.24 \\
+ & ACE+GS-CPR~\cite{reported260504730v1bibbib61} & 0.5 / 0.15 & 0.6 / 0.25 & 0.4 / 0.28 & 0.9 / 0.26 & 1.0 / 0.23 & 0.7 / 0.17 & 1.4 / 0.42 & 0.8 / 0.25 \\
+ & ULF-Loc~\cite{gu2026ulfloc} & 0.42 / 0.11 & 0.44 / 0.19 & 0.36 / \textbf{0.21} & 0.73 / 0.20 & 0.92 / 0.18 & 0.65 / 0.13 & 1.38 / 0.36 & 0.7 / 0.20 \\
+ & CROSSFIRE~\cite{reported260504730v1bibbib42} & 1 / 0.4 & 5 / 1.9 & 3 / 2.3 & 5 / 1.6 & 3 / 0.8 & 2 / 0.8 & 12 / 1.9 & 4.43 / 1.38 \\
+ & SplitGS-Loc~\cite{lee2026splitgsloc} & 0.7 / 0.16 & 0.7 / 0.29 & 0.6 / 0.26 & 1.2 / 0.25 & 1.4 / 0.25 & 1.0 / 0.18 & 1.6 / 0.47 & 1.0 / 0.26 \\
+ & SplitGS-Loc + GS-CPR~\cite{lee2026splitgsloc} & 0.3 / 0.11 & \textbf{0.4} / \textbf{0.18} & 0.4 / 0.27 & \textbf{0.6} / \textbf{0.16} & 0.9 / 0.20 & \textbf{0.4} / 0.12 & \textbf{0.9} / \textbf{0.28} & \textbf{0.6} / \textbf{0.19} \\
+ & GSVisLoc~\cite{khatib2025gsvisloc} & 0.39 / 0.13 & 0.58 / 0.24 & 0.54 / 0.34 & 1.0 / 0.26 & 0.90 / 0.21 & 0.73 / 0.18 & 4.7 / 0.96 & 1.3 / 0.33 \\
+\midrule
+Ours & AnyGSLoc & \textbf{0.27} / \textbf{0.09} & 0.53 / 0.22 & \textbf{0.35} / 0.22 & \textbf{0.60} / 0.17 & \textbf{0.69} / \textbf{0.17} & 0.41 / \textbf{0.11} & 1.61 / 0.48 & 0.64 / 0.21 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Median translation / rotation errors in cm / degrees. FM: feature matching; APR: absolute pose regression; SCR: scene coordinate regression; NeRF/GS: neural scene representations. Reported results are compiled from ULF-Loc~\cite{gu2026ulfloc} and STDLoc~\cite{huang2025stdloc}, supplemented by SplitGS-Loc~\cite{lee2026splitgsloc} and GSVisLoc~\cite{khatib2025gsvisloc}. Our indoor evaluation uses SfM pseudo-ground-truth poses.  Dashes denote unreported scene results; Bold marks scene-wise minima and full-coverage aggregate minima; TE and RE are ranked separately. Daggered means have different coverage and are excluded from aggregate rankings.\end{minipage}
+\end{table*}
+

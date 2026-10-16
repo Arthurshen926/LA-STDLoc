@@ -1,0 +1,50 @@
+\subsubsection{Implementation settings}
+\label{sec:implementation}
+We use the same construction rules across the evaluated Gaussian representations. This subsection collects numerical settings and exact aggregation rules; the preceding method section describes their roles. Reference images are rendered at the original mapping poses and intrinsics in all reported experiments.
+
+\paragraph{Observation filtering}
+Mask values are sampled at rounded detector coordinates after feature extraction. Geometric support requires finite positive depth, finite opacity at least 0.05, and a maximum horizontal/vertical backward depth difference no larger than 8\% of the median positive image depth. Appearance support is the larger of the normalized local Sobel magnitude and intensity variation, thresholded at 0.20. Each component is divided by its 0.97 quantile and clipped to $[0,1]$. The averaging window and mask-dilation radius scale from 9 and 5 pixels at a 1080-pixel short side; the averaging window is odd and at least three pixels. Region validity excludes a border of $\max\{1,\operatorname{round}(0.02\min(H,W))\}$ pixels. Available distortion is invalid when nonfinite or when its absolute value exceeds both its median plus 20 median absolute deviations and its 0.995 quantile; the deviation floor is $10^{-8}$. Missing distortion adds no rejection criterion.
+
+\paragraph{Track association}
+The camera graph unions up to six neighbors per view. Eligible pairs have a baseline of 0.03--5\,m and an optical-axis angle no larger than $75^\circ$; pairs are ranked by normalized baseline plus $0.5(1-\cos\theta)$. Normalization uses the median eligible baseline. Matching tests the four leading descriptor candidates in each direction, with a 2-pixel symmetric epipolar threshold, cosine similarity at least 0.65, and two-sided margin 0.01. A missing valid runner-up has score $-\infty$. For a pair in views $a,b$, the accepted-edge confidence is
+$\gamma_{ab}=\langle d_a,d_b\rangle\exp[-e_{ab}^2/(2\sigma_e^2)]\sqrt{s_as_b}$,
+with $\sigma_e=2$\,px. Depth-guided augmentation uses up to 256 strongest unused valid observations per view, 0.05-m world voxels, similarity 0.70, margin 0.01, and the same epipolar test. Augmented tracks require three cameras spanning at least two pose groups.
+
+\paragraph{Triangulation and descriptor fusion}
+Detector coordinates are converted to physical pixel centers using $\bar u=(u_x+0.5,u_y+0.5,1)^\mathsf T$. Geometry uses the 32 highest-confidence observations per track. Base confidence is floored at $10^{-4}$ and divided by its within-track mean. After the initial ray solve, three reweighting updates use $\delta=2$\,px. Ray and final pixel-Jacobian normal matrices must have finite spectra and minimum eigenvalues above $10^{-12}$; at least three finite, positive-depth observations are required. The variance scale in~\eqref{eq:pointcov} is
+$\widehat\sigma_i^2=\max\{\operatorname{median}_{m\in\mathcal V_i^+}e_{mi}^2,10^{-8}\,\mathrm{px}^2\}$.
+
+Camera groups are formed by deterministic farthest-point grouping in an embedding of median-centered, scale-normalized camera centers and optical axes weighted by 0.5. The positional scale is the median positive distance from the median camera center. The first group representative is farthest from the embedding centroid; later representatives maximize distance to the current set, and cameras are assigned to their nearest representative. We use at most eight groups. Fusion weights are $a_{mi}=\max\{s_{mi}\gamma_{mi},10^{-4}\}$. For $n_i^{\rm grp}$ occupied groups, $\mathcal K_i$ contains the $\max\{1,\operatorname{round}(0.8n_i^{\rm grp})\}$ descriptors nearest to the cosine medoid. Stored descriptors have $D_f=256$ dimensions.
+
+\paragraph{Landmark quality}
+The geometric scales are $\tau_e=2$\,px and $\tau_\theta=1^\circ$. Parallax $\theta_i$ is the 75th percentile of pairwise bearing angles among positive-depth support observations with residual at most 4\,px. If fewer than three satisfy this residual threshold, all finite positive-depth support observations are used instead.
+
+For association reliability, let $\bar\gamma_i$ be the mean observation confidence, $c_i$ the mean cosine agreement with the normalized unweighted track-mean descriptor (clipped to $[0,1]$), and $g_i=\min\{n_i^{\rm grp}/3,1\}$. Then
+\begin{equation}
+q_i^{\rm assoc}=\begin{cases}
+\chi_i(\bar\gamma_i c_i g_i)^{1/3},&\text{primary track},\\
+c_i,&\text{augmented track},
+\end{cases}
+\label{eq:quality_implementation}
+\end{equation}
+where $\chi_i=1$ for cycle-seeded tracks and $0.8$ for pure chains. Each factor in the primary-track product is floored at $10^{-8}$ for numerical stability, and the final quality is clipped to $[0,1]$. The track mean used here is distinct from the exported descriptor in~\eqref{eq:descriptor}.
+
+\paragraph{Selection settings}
+Quality ranking resolves ties by decreasing track length and then candidate ID. The core contains at least 1,024 points and checks the tenth percentile of per-view support every 512 additions, against target $b=256$; candidate exhaustion terminates the step. Coverage completion clips each target to Full-map feasibility, balances groups with $\omega_m=\sqrt{\bar n/n_{g(m)}}$ for group size $n_g$ and mean size $\bar n$, and resolves equal marginal gains by quality then ID.
+
+For the evaluated pinhole cameras, let $y_{mi}=R_mX_i+t_m$. The left-increment pose Jacobian used in~\eqref{eq:information} is
+$J_{\xi,mi}=J_{X,mi}R_m^\mathsf T[I_3\;- [y_{mi}]_\times]$,
+using the previously defined point Jacobian. Task scales are $s_t=0.05$\,m and $s_r=5\pi/180$ radians, with $\sigma_{\rm pix}^2=4$\,px$^2$, $\lambda=10^{-4}$, and $\beta=0.05$. Computation uses the pseudoinverse of $\Sigma^u_{mi}+10^{-8}I_2$ and symmetrizes $B_{mi}$. A nonfinite stored point covariance is omitted from image-noise propagation.
+
+The detector-conditioned weight is
+\begin{equation}
+q_{mi}=q_i\left[\frac12+\frac12\operatorname{clip}_{[0,1]}
+\left(\frac{s_{mi}-s_{m,10}}{\max\{s_{m,90}-s_{m,10},10^{-6}\}}\right)\right],
+\label{eq:detector_weight_implementation}
+\end{equation}
+where $s_{m,10}$ and $s_{m,90}$ are per-view detector-score percentiles. The bracketed factor is one if fewer than two finite scores are available. All candidate-view information contributions remain fixed during selection.
+
+Diversity counts previously unoccupied categories using a $4\times4$ image grid, depth index $\lfloor2\log_2\max(z_{mi},0.05)\rfloor$ with depth in meters, and 0.5-m world voxels. Pose completion accepts at most 4,096 landmarks and three additions per voxel. Scores are refreshed before acceptance, and the process stops below 2\% of its first accepted gain, at nonpositive gain, or on exhaustion. Voxel limits apply only to pose additions. Cleanup targets are frozen at the distinct support attained before cleanup, capped at $b$; only coverage-added landmarks can be removed.
+
+\paragraph{Query settings}
+Exact float32 descriptor matching uses chunks of 8,192 map rows; equal similarities select the smaller map row. Given $K$ matches, we retain $\min\{K,\max(256,\lceil0.65K\rceil)\}$ by score, without reciprocal filtering or duplicate-landmark removal. Fewer than four correspondences return failure. PoseLib uses confidence 0.999 and 250--30,000 RANSAC iterations. The query feature budget is $\operatorname{clip}_{[1024,2048]}(\operatorname{round}(2048A_{\rm med}/2073600))$, and the reprojection threshold is $\max\{2,0.007176913f_{\rm med}\}$\,px. Here $A_{\rm med}$ is the median reference-image area and $f_{\rm med}$ the median geometric mean of its horizontal and vertical focal lengths. Localization-time boundaries remain those defined in Sec.~\ref{sec:setup}.

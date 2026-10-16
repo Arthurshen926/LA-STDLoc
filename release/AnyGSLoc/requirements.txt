@@ -1,0 +1,3 @@
+# Full source-checkout setup; pyproject.toml is the only dependency contract.
+# For online-only dependencies: pip install .
+-e .[mapping]

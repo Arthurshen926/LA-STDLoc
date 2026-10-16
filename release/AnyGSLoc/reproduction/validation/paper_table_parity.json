@@ -1,0 +1,29 @@
+{
+  "tables": 22,
+  "numeric_cells": 761,
+  "cells_per_table": {
+    "T1": 12,
+    "T2": 16,
+    "T3": 26,
+    "T4": 34,
+    "T5": 18,
+    "T6": 24,
+    "S_t6_full": 24,
+    "T7": 32,
+    "T8": 42,
+    "S_prior_full": 42,
+    "T9": 24,
+    "S_baselines": 60,
+    "S_baseline_tails": 30,
+    "S_filter_fusion": 56,
+    "S_geometry": 42,
+    "S_prior_tails": 98,
+    "S_input_tails": 38,
+    "S_selection": 49,
+    "S_gs_assisted": 16,
+    "S_timing": 48,
+    "S_resources": 18,
+    "S_native_stages": 12
+  },
+  "literature_rows": "preserved cited values; not local reruns"
+}

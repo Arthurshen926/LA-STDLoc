@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "frontend": "alpha_gated",
+  "input_modes": [
+    "pure_gs"
+  ],
+  "scenes": {
+    "apt1_kitchen": {
+      "dataset": "datasets/12Scenes/apt1_kitchen",
+      "prior": "priors/indoor/12Scenes/apt1_kitchen.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 357,
+      "full_map": "maps/12Scenes/full/apt1_kitchen.pt",
+      "compact_map": "maps/12Scenes/compact/apt1_kitchen.pt"
+    },
+    "apt1_living": {
+      "dataset": "datasets/12Scenes/apt1_living",
+      "prior": "priors/indoor/12Scenes/apt1_living.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 493,
+      "full_map": "maps/12Scenes/full/apt1_living.pt",
+      "compact_map": "maps/12Scenes/compact/apt1_living.pt"
+    },
+    "apt2_bed": {
+      "dataset": "datasets/12Scenes/apt2_bed",
+      "prior": "priors/indoor/12Scenes/apt2_bed.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 244,
+      "full_map": "maps/12Scenes/full/apt2_bed.pt",
+      "compact_map": "maps/12Scenes/compact/apt2_bed.pt"
+    },
+    "apt2_kitchen": {
+      "dataset": "datasets/12Scenes/apt2_kitchen",
+      "prior": "priors/indoor/12Scenes/apt2_kitchen.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 230,
+      "full_map": "maps/12Scenes/full/apt2_kitchen.pt",
+      "compact_map": "maps/12Scenes/compact/apt2_kitchen.pt"
+    },
+    "apt2_living": {
+      "dataset": "datasets/12Scenes/apt2_living",
+      "prior": "priors/indoor/12Scenes/apt2_living.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 359,
+      "full_map": "maps/12Scenes/full/apt2_living.pt",
+      "compact_map": "maps/12Scenes/compact/apt2_living.pt"
+    },
+    "apt2_luke": {
+      "dataset": "datasets/12Scenes/apt2_luke",
+      "prior": "priors/indoor/12Scenes/apt2_luke.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 624,
+      "full_map": "maps/12Scenes/full/apt2_luke.pt",
+      "compact_map": "maps/12Scenes/compact/apt2_luke.pt"
+    },
+    "office1_gates362": {
+      "dataset": "datasets/12Scenes/office1_gates362",
+      "prior": "priors/indoor/12Scenes/office1_gates362.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 386,
+      "full_map": "maps/12Scenes/full/office1_gates362.pt",
+      "compact_map": "maps/12Scenes/compact/office1_gates362.pt"
+    },
+    "office1_gates381": {
+      "dataset": "datasets/12Scenes/office1_gates381",
+      "prior": "priors/indoor/12Scenes/office1_gates381.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 1053,
+      "full_map": "maps/12Scenes/full/office1_gates381.pt",
+      "compact_map": "maps/12Scenes/compact/office1_gates381.pt"
+    },
+    "office1_lounge": {
+      "dataset": "datasets/12Scenes/office1_lounge",
+      "prior": "priors/indoor/12Scenes/office1_lounge.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 327,
+      "full_map": "maps/12Scenes/full/office1_lounge.pt",
+      "compact_map": "maps/12Scenes/compact/office1_lounge.pt"
+    },
+    "office1_manolis": {
+      "dataset": "datasets/12Scenes/office1_manolis",
+      "prior": "priors/indoor/12Scenes/office1_manolis.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 807,
+      "full_map": "maps/12Scenes/full/office1_manolis.pt",
+      "compact_map": "maps/12Scenes/compact/office1_manolis.pt"
+    },
+    "office2_5a": {
+      "dataset": "datasets/12Scenes/office2_5a",
+      "prior": "priors/indoor/12Scenes/office2_5a.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 497,
+      "full_map": "maps/12Scenes/full/office2_5a.pt",
+      "compact_map": "maps/12Scenes/compact/office2_5a.pt"
+    },
+    "office2_5b": {
+      "dataset": "datasets/12Scenes/office2_5b",
+      "prior": "priors/indoor/12Scenes/office2_5b.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 405,
+      "full_map": "maps/12Scenes/full/office2_5b.pt",
+      "compact_map": "maps/12Scenes/compact/office2_5b.pt"
+    }
+  }
+}

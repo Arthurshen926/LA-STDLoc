@@ -1,0 +1,2942 @@
+{
+  "schema": 1,
+  "distribution": "local release candidate; large assets are not uploaded",
+  "assets": [
+    {
+      "path": "datasets/Cambridge/ShopFacade",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/Cambridge/ShopFacade/dataset_train.txt",
+      "kind": "dataset_metadata",
+      "bytes": 19901,
+      "sha256": "d28b54c9aa1a19e917a47d70b17fe66d49cdea65cf4209deab0665e2180ae4be"
+    },
+    {
+      "path": "datasets/Cambridge/ShopFacade/dataset_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 8933,
+      "sha256": "3b923fd56124273fc506d14121e7ae36ba8dd4c03a96a11161ffdddb2596b63d"
+    },
+    {
+      "path": "datasets/Cambridge/ShopFacade/sparse/0/cameras.bin",
+      "kind": "dataset_metadata",
+      "bytes": 18712,
+      "sha256": "01e58a3073ebb4dcb5e6cbdaec90bac2c440cbc49b60707ea51d8d3211940e70"
+    },
+    {
+      "path": "datasets/Cambridge/ShopFacade/sparse/0/images.bin",
+      "kind": "dataset_metadata",
+      "bytes": 30736,
+      "sha256": "ebdeee61424934fd48262616cf353611740fef50ef8fba682b0603ecdfe8c1d2"
+    },
+    {
+      "path": "datasets/Cambridge/ShopFacade/processed/masks.pkl",
+      "kind": "dataset_metadata",
+      "bytes": 231175543,
+      "sha256": "ea5b3e95840553f5069306aa6b891ac043e0c0faa60340ecf435580b1a643f5a"
+    },
+    {
+      "path": "priors/vanilla_3dgs/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 432589916,
+      "sha256": "ab58381f9d65b719f31b1d71aa7546d5e33c05b1507628bd59cbfd000759f60f"
+    },
+    {
+      "path": "observations/vanilla_3dgs/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502706988,
+      "sha256": "1afb6edd933aa8a758fd3dfed82f2c297e3f3a211d7e8eb484fb9315d965872b"
+    },
+    {
+      "path": "maps/Cambridge/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 27096774,
+      "sha256": "fb7f46cb0dbc3378721d870848c6bb183a15118c0dbedd279286e046185ba435"
+    },
+    {
+      "path": "maps/Cambridge/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12544262,
+      "sha256": "940c1ba9f9393289f2dd89bc237fddd232df9c178975ef26ecfa54e392382cfd"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital/dataset_train.txt",
+      "kind": "dataset_metadata",
+      "bytes": 77455,
+      "sha256": "0d9c3086d9d04c2d50c591a4fc7f127220d566e9053ac6189e158f68d425ab94"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital/dataset_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 15828,
+      "sha256": "e3f24fb231a3bbf8d33031197796d9b4dd83cd6d788d0c14460920bf1c83462a"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital/sparse/0/cameras.bin",
+      "kind": "dataset_metadata",
+      "bytes": 60320,
+      "sha256": "30d7f53cd29449d132ade1b7ea37ef340a60e841ed6e872009ba09c042d63701"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital/sparse/0/images.bin",
+      "kind": "dataset_metadata",
+      "bytes": 99092,
+      "sha256": "f3bc4a210c8d977b757408b4896c37e65bf9f9fa173717f4194b4df94ad6cb5d"
+    },
+    {
+      "path": "datasets/Cambridge/OldHospital/processed/masks.pkl",
+      "kind": "dataset_metadata",
+      "bytes": 745437051,
+      "sha256": "696451ad5b5f32d052aa91d26f9e456f1be28c0a593034425e38ccf969253b50"
+    },
+    {
+      "path": "priors/vanilla_3dgs/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 306155796,
+      "sha256": "87edc1940d439af43ad68514f4e94d1839c7d403df0dc6b7f5bcc9d3bbf208aa"
+    },
+    {
+      "path": "observations/vanilla_3dgs/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1947718052,
+      "sha256": "cbe789ec7beb7e1e2e66068e68dacff52fbe7a5a92d22cd6468f11c6d8b69d18"
+    },
+    {
+      "path": "maps/Cambridge/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 76118790,
+      "sha256": "c3728a68f75d4d36fc6cc9e7e6fd0c19059eb4166458aff4f0c7a2ad9fedfdd9"
+    },
+    {
+      "path": "maps/Cambridge/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 9631558,
+      "sha256": "aef7197de5acbf7ba74dd5f02651c43ed7f326486973876c9a34e1a9eb463721"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege/dataset_train.txt",
+      "kind": "dataset_metadata",
+      "bytes": 106405,
+      "sha256": "0eb6f0b2a75e23257745e781ad30a1128d3523474677ecd757a93dfde003fc88"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege/dataset_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 29965,
+      "sha256": "98585e1f77fc92da559c1678e1488b6c8cb2904a8b3b060fe7b08c0829fc7ef4"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege/sparse/0/cameras.bin",
+      "kind": "dataset_metadata",
+      "bytes": 87536,
+      "sha256": "55b71a18064b9cff8d2a71ae71903a105479f199b4d3c382ae931cc424f68898"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege/sparse/0/images.bin",
+      "kind": "dataset_metadata",
+      "bytes": 143804,
+      "sha256": "63ef8fb7ac88b7ff5f0101e930c5e3d567529550869ed3bf4bab84aadde5914a"
+    },
+    {
+      "path": "datasets/Cambridge/KingsCollege/processed/masks.pkl",
+      "kind": "dataset_metadata",
+      "bytes": 1081827441,
+      "sha256": "a5926bad6e0e33cfc29217bab92f28f260469483eab131c6399067e5a5c450cf"
+    },
+    {
+      "path": "priors/vanilla_3dgs/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 245346195,
+      "sha256": "d1f4e19e0b9ad81fc3226ea486405056dc2d1c19116d95624d9307fa3111169f"
+    },
+    {
+      "path": "observations/vanilla_3dgs/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655000393,
+      "sha256": "715fda57a238fc3a0b2b2685e668ccc0f15ea81f1e9f120a9503e83385d27cc9"
+    },
+    {
+      "path": "maps/Cambridge/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 88584198,
+      "sha256": "8e2d425d0d14037948774cdf22b8fc4078134b5c118271ddba602baa4bb008f5"
+    },
+    {
+      "path": "maps/Cambridge/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 8076998,
+      "sha256": "4fe82024673ab1363a85f2a47de68884cdcf2c428b1747a5cb04aaaacc61afb0"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt/dataset_train.txt",
+      "kind": "dataset_metadata",
+      "bytes": 131339,
+      "sha256": "fc85f0284642ddd7d3eafc5bd7091757415b2fb534d374c686f21af5a83f6bff"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt/dataset_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 65249,
+      "sha256": "7fc0b6caba8bb4eeaeef1df85751a1f85ab9b9db696f796e15ad8edc7fdd506f"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt/sparse/0/cameras.bin",
+      "kind": "dataset_metadata",
+      "bytes": 128304,
+      "sha256": "026e6b21dd711d67df5c2fdf1c29abfe5ea7106b0e357db470ff2afd8b53de98"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt/sparse/0/images.bin",
+      "kind": "dataset_metadata",
+      "bytes": 210780,
+      "sha256": "59251e9e4a8a1f37a95842fd325127e0886da6f71a6f37e54c7d7cf6c07b96a8"
+    },
+    {
+      "path": "datasets/Cambridge/GreatCourt/processed/masks.pkl",
+      "kind": "dataset_metadata",
+      "bytes": 1585697441,
+      "sha256": "376684dde32c8f8f59af9c98077d9c434bef02362e57486af8a0dc4ade68c65e"
+    },
+    {
+      "path": "priors/vanilla_3dgs/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 187483083,
+      "sha256": "3229d2d66380e8818e52edc492f8b02bfec29b201d8f2dee858489fd39100610"
+    },
+    {
+      "path": "observations/vanilla_3dgs/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3331823177,
+      "sha256": "90030cfcfb7d00f31be258728cb849e92a335a7c4f095b68abbd4563ef5557d6"
+    },
+    {
+      "path": "maps/Cambridge/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 209911558,
+      "sha256": "fbf58f87f80c72f9f52d1c756cf4c5e12380d355c617e1764909ec64c645d895"
+    },
+    {
+      "path": "maps/Cambridge/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 46596422,
+      "sha256": "ab021a52c03e5176f7706b94fec87269085d442433425a704c7c372b88784643"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch/dataset_train.txt",
+      "kind": "dataset_metadata",
+      "bytes": 130804,
+      "sha256": "bbc8c42a193380d4525583e40509a380124e4e6afe9a4e8dc9ae5b67f140c774"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch/dataset_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 46997,
+      "sha256": "5dc0b9aa1aadeb9bccbd4f789a040cc20a32bcf743895f5943b0a7269475d3c4"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch/sparse/0/cameras.bin",
+      "kind": "dataset_metadata",
+      "bytes": 112960,
+      "sha256": "0540831776ffd05a80afa033776ba023159b1c989c743ed3eee426433e6bf18a"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch/sparse/0/images.bin",
+      "kind": "dataset_metadata",
+      "bytes": 186257,
+      "sha256": "f1a9a4de74acb658c070dd3925dea53aec3a6d5e67dded66e7a2f460b25df874"
+    },
+    {
+      "path": "datasets/Cambridge/StMarysChurch/processed/masks.pkl",
+      "kind": "dataset_metadata",
+      "bytes": 1396051218,
+      "sha256": "bce65837bed8ac8ff3bb47d12aaa39fc87f507995a3775ac7123a12f05c8149e"
+    },
+    {
+      "path": "priors/vanilla_3dgs/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 180320347,
+      "sha256": "25dfdb758f75aed082ca75ba0607ea27696050730a3c316c5a413a6ad185450d"
+    },
+    {
+      "path": "observations/vanilla_3dgs/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236064009,
+      "sha256": "fbc7332f1f89888c4c1a568fc3f062a1188e4fdc99d6169518d78ddf39bfd070"
+    },
+    {
+      "path": "maps/Cambridge/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 183977542,
+      "sha256": "643dc4cc4724f857782fa0c3bb0bb8f8ac4a3a06b890e5269a96e825b564328f"
+    },
+    {
+      "path": "maps/Cambridge/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 49878982,
+      "sha256": "11ee5f3e5bae2e6fad485759a42a4b2639899f909bf8fd61934bf570b9470a63"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/center/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 21063558,
+      "sha256": "5610f1a815324cf293a9bb80de1b11de6f5a1e07550e319ba2ccdcf23f0f4153"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/depth/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 21063558,
+      "sha256": "7e9e05f13b43624c9160da1612466f62fdcd06959c11e5c4e3184d158ec30cec"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/ray/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 21063558,
+      "sha256": "b61ad2d5b8847cb5bd824c25cdb77cf7d15a9ac9128ae572dd0f7ee57f1d1b55"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/center/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 62574022,
+      "sha256": "c74783b6137f5a2b36c9c5ce4e03766049026535ec538dbea82de1a9baeea456"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/depth/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 62574022,
+      "sha256": "69a9f68ee4c76c403c4e642f3eade0698c0cdede951d2276b572848cde3bf24d"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/ray/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 62574022,
+      "sha256": "f385be68df4e92c11a256dbbdc5171ecd39d761f7d7afa015a7560efb174e504"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/center/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 72063046,
+      "sha256": "ff7c3533b14691aef86cbd78b7509e0d31c2e3e7c4b6cbf56196a6c313d3e4aa"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/depth/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 72063046,
+      "sha256": "e16cf3a513afe36de02f0498896816984077d0f130ead8ce0bb8117cb865094a"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/ray/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 72063046,
+      "sha256": "1633382746aeab2a15692dcf471345fc22caf21ab541db207391308c2107d4ae"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/center/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 162644614,
+      "sha256": "8ce6f69ebb59f7a754ddf013192d48dec9dbcf35af870c5c511729b01299c01e"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/depth/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 162644614,
+      "sha256": "f1f49418a3fef12eccf1cfb523aed592fc6576aa52b5f6a7610a48b48e8a26b1"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/ray/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 162644614,
+      "sha256": "b87a864169c88b843b68b9c53fe1058dea34742d9a01472ee692a22c1861cc77"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/center/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 121422214,
+      "sha256": "2412217f1a8cb87f8bdd612172d2a1ae7c1f0fc04bad67eb91a7720143feaf3c"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/depth/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 121422214,
+      "sha256": "a995ad55389feb07ac23ec4989c73e428d9517bd2830cc034b48c96b0c2041a5"
+    },
+    {
+      "path": "maps/geometry/vanilla_3dgs/ray/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 121422214,
+      "sha256": "168603608357a96f55737a5503c84af5dbff0086a54e45fefccf9b269536f2a7"
+    },
+    {
+      "path": "maps/geometry/matcha/center/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 20495622,
+      "sha256": "cb74bb09d088e32971c49b9f570655266af497310e1f4adfbf3e4f880612c59d"
+    },
+    {
+      "path": "maps/geometry/matcha/depth/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 20495622,
+      "sha256": "df5405cc12964637932cf82bc8250a8b6e3d98d0dfbcfb2180a6a0c75efa5d5d"
+    },
+    {
+      "path": "maps/geometry/matcha/ray/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 20495622,
+      "sha256": "751615ddf72c48ca37d4e66d9a86958f4c41f887b1791931840a760c68f59915"
+    },
+    {
+      "path": "maps/geometry/matcha/center/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 56362310,
+      "sha256": "10fa89186511d8c9ff02382a3690015c1ec3886c1225940e9b11d4bdfe7be56a"
+    },
+    {
+      "path": "maps/geometry/matcha/depth/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 56362310,
+      "sha256": "8fa621a9d446c9edd620f27d8f02162e9818ef95e1be82100b70593bd38c46ca"
+    },
+    {
+      "path": "maps/geometry/matcha/ray/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 56362310,
+      "sha256": "1e407937455351c339ad46e30192f8a6f952cd91f69d816e2a33934a021dbc14"
+    },
+    {
+      "path": "maps/geometry/matcha/center/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 65858502,
+      "sha256": "5ce7978d1faa58df5b31466e34d4da500a553fec928b9ccfeac892abd759b9dc"
+    },
+    {
+      "path": "maps/geometry/matcha/depth/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 65858502,
+      "sha256": "a67adf5192f748cd3bbcc3c0fcdf68e706ddc2faf46c3d6f55450f4f7814904b"
+    },
+    {
+      "path": "maps/geometry/matcha/ray/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 65858502,
+      "sha256": "30a9aba23ba59811fbb4ca94817685ccdf9598e436975dcc0128f24bb0b42535"
+    },
+    {
+      "path": "maps/geometry/matcha/center/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 133411590,
+      "sha256": "08a06ff6f168354bebefc7216c2199644a5524cd8d2f204fa5edf6337e5a9349"
+    },
+    {
+      "path": "maps/geometry/matcha/depth/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 133411590,
+      "sha256": "7e68daac958f60e6f0293df8a92cb978a81bb015b3d416b52eeed3ba04df5e44"
+    },
+    {
+      "path": "maps/geometry/matcha/ray/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 133411590,
+      "sha256": "37437bf91992ecae84c3567fd9221a24192fe52a52477bfa0aa31948c24a43de"
+    },
+    {
+      "path": "maps/geometry/matcha/center/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 91718406,
+      "sha256": "da297353daa3dbbe0833386f0a4f91b1cffcc69a9b484396a9bb62952b771ea8"
+    },
+    {
+      "path": "maps/geometry/matcha/depth/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 91718406,
+      "sha256": "d319052e5c829e7813c39f51f593cfc86830965af7106ed5c7d8d91c369fb93f"
+    },
+    {
+      "path": "maps/geometry/matcha/ray/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 91718406,
+      "sha256": "0edadd9c76b354c0bc1f859a390e0b96734ef81214991b6219ee57566a6d799e"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_on_single/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 27096774,
+      "sha256": "6fb92f2021a662040422e893b9c8729daf60d0388363e4633c215f0fb9b79216"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_fused/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 34170950,
+      "sha256": "37a593973bf0b49fd96361e88a30a23d8203d070ca124cf9004a25dfb58c3105"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_single/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 34170950,
+      "sha256": "98a2aab1577c8b694ecae2a5353492893b4f7087797504bc022d427f58cd81fe"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_on_single/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 76118790,
+      "sha256": "283c0967fc47e367c8ae6dfec5c6d9a4d9dc004becf431da41866894b55c6b02"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_fused/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 83312006,
+      "sha256": "1a44be59af6e2a605399fd2801e029ceddcdf5dbf7b18020f40844758e94240d"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_single/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 83312006,
+      "sha256": "87f89687e0db1c077c6fab9316f3978a536505888ae312d51ffa6669e23340f9"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_on_single/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 88584198,
+      "sha256": "b60a812ff77854ac11dac0d1271daf6d82b00b8016131d37ed2883e972b11d7e"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_fused/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 99077446,
+      "sha256": "88a07c55acaa759fb28d8ddcbe53b54a88f838d22770aeb0e197cfd810239204"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_single/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 99077446,
+      "sha256": "f5a3c0e4087fc91d364af02ba7c7b45e1a24b16b88cb08118ce6fcd93c3e9264"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_on_single/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 209911558,
+      "sha256": "6b5a24ecbab88f7df27c1e1ab8a24aa2399aab4c4901ddbf7b6551899ed3f6f4"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_fused/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 230773894,
+      "sha256": "0e45dc5ab16254d06d05591a9d7003d12c9a4209d38b8017faed3ebfa01bc336"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_single/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 230773894,
+      "sha256": "a2a096ec92d27a31c23000afcf11209123c999c140bb6f1f7e113480ada8d437"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_on_single/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 183977542,
+      "sha256": "1754d80fff1cbd794a000bc6463d99821cb036bf34506b6a698604d16d952bc2"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_fused/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 204918214,
+      "sha256": "73ca1a7308a2515b42b2c9b57971998098bcf1516ca31f75eaaa3c7b2fa60873"
+    },
+    {
+      "path": "maps/filter_fusion/full/filter_off_single/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 204918214,
+      "sha256": "fe06d580425e26f98a30c38315e228e498e2de73fc39229f0a19f95452de2a05"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_on_single/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12544390,
+      "sha256": "1a802993307825c8deea7ff96dbb0d2a84e5ae5130173bb88a5bb15367547b8a"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_fused/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12965190,
+      "sha256": "d332907d8aea73dc0801ec756e2d0dc502da407eccfdcea619ff7ad0a69b3a07"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_single/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12965190,
+      "sha256": "8a64e1963042160d83f9f814668e1e74da60d43ba30f1a4721cb76f92ed1e7d1"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_on_single/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 9631686,
+      "sha256": "dbba7b8229583737c5a853084b529f97abedcad213a8160f5c6ab21b9531c0b0"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_fused/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 9065798,
+      "sha256": "2f96111ef388c21612c7695beb9e026bc40409d40c7e9799dd315027b8a46dc8"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_single/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 9065798,
+      "sha256": "da3f772a513fff16b661b81bf46090e90b8770ab0ebdb285963a349250c1e53b"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_on_single/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 8077126,
+      "sha256": "740375d4f4b7064c2373b3f0f500ab3105aa2dcd495bad62d2a775bab96527ec"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_fused/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 7877766,
+      "sha256": "ea01b4ba4ea95e594cf63f8eb8d347de14d8dfcec1323dc3f40bc844ede18b38"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_single/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 7877766,
+      "sha256": "a81fec48a8c5452562b5775d00c9450c65cb683c062525b0a5f0722146b19fc0"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_on_single/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 46596550,
+      "sha256": "95a96bc5e53271c15d22f8d05214f8e11c78bccde9ae47e2278fa560ce720cff"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_fused/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 45891846,
+      "sha256": "8c7b2ad28d63f19881c047d56f4693f10929ebec9ff3203c1b25a9b47be56f3d"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_single/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 45891846,
+      "sha256": "4d4b0cad02865eb6131125fb04d834837beb8ad088195abfbdb5bc59ed6847d3"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_on_single/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 49878854,
+      "sha256": "6bd19fae179949b27f83a069b48759db3d110eb11f8fcc705b2569c59e88e903"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_fused/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 45333318,
+      "sha256": "57e8629db883dec6806d3b422936253ea8e5639ffc5f6c1d14391c8b3f32fdca"
+    },
+    {
+      "path": "maps/filter_fusion/compact/filter_off_single/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 45333318,
+      "sha256": "cd704a833e8c08c3525825c8cb4b0bf3f20be6255b303e3f53e48ddccc9182f9"
+    },
+    {
+      "path": "maps/selection/quality_stage/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 9722822,
+      "sha256": "b1341cc77cca8833cf269f4ec365ae12d924dc2375097c564a11d2e5a665567b"
+    },
+    {
+      "path": "maps/selection/coverage_stage/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 9928454,
+      "sha256": "5de2d66255fac5648f64d4656c6a8a9941ea91ac8ce4d9ff5c3163debfda2e84"
+    },
+    {
+      "path": "maps/selection/quality_topk/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12643846,
+      "sha256": "6ffdd6bdb0efec598d44a7c48a1e90b53d78e48d3647a600e53cb3ad2e37051e"
+    },
+    {
+      "path": "maps/selection/tracklength_topk/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12643846,
+      "sha256": "284dc43fb7bc6069a7f1c928f4231661d7e658f6d06d43d941b6623f6f6d3aae"
+    },
+    {
+      "path": "maps/selection/spatial/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12544326,
+      "sha256": "a6ef436a963adebd452c554e33f351442a55c5c79451d6a5a79665778c464b42"
+    },
+    {
+      "path": "maps/selection/quality_stage/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 5198854,
+      "sha256": "6b4a61f016462bb98d37cc6613818bccbfe63dfb6488e82f1565d9b32ffbe6a5"
+    },
+    {
+      "path": "maps/selection/coverage_stage/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 5819974,
+      "sha256": "76b107eb2c39fa59485e06f7c6cdae528adc18d5cc638ab944cefb5e34ae4699"
+    },
+    {
+      "path": "maps/selection/quality_topk/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 10017926,
+      "sha256": "10c008e8bfde55199dbf01b72a229e7462989e2763cbfefd8392195382f73d6d"
+    },
+    {
+      "path": "maps/selection/tracklength_topk/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 10017926,
+      "sha256": "3ea3ed5c60e7074d199eb8ba9f89365370ee84968a9e08e6f4ad90f0e6cb0e99"
+    },
+    {
+      "path": "maps/selection/spatial/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 9631622,
+      "sha256": "4b14e8f565a6eeaa82b3dda71017d8d96eec52114d709171ab1a6634423dffb8"
+    },
+    {
+      "path": "maps/selection/quality_stage/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 3735686,
+      "sha256": "706a9d57b41cf4da006a38f7c2ef2cafba007b9170a35b922651cacc9fb920a9"
+    },
+    {
+      "path": "maps/selection/coverage_stage/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 4710726,
+      "sha256": "71278aad84876a6c8cef6d15a77d1a535f75436af9c44960d32c38c1ef22c748"
+    },
+    {
+      "path": "maps/selection/quality_topk/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 8603782,
+      "sha256": "362aeae4113882cb3b5efe4d55bc9b56b4087c6e7aff23fe350d70da05b60883"
+    },
+    {
+      "path": "maps/selection/tracklength_topk/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 8603782,
+      "sha256": "5fe15bd2bdb19f9fe89bd826aa8fd6113493ad86e7803f53f101aeff0201c120"
+    },
+    {
+      "path": "maps/selection/spatial/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 8077062,
+      "sha256": "e4cde5eb0c6e183545eb061aa6b85a41743939a1b5c33294f74bc0df9d11be8e"
+    },
+    {
+      "path": "maps/selection/quality_stage/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 39683398,
+      "sha256": "79d33883a28dfec3e7df6527cadef39de3711ef688145caa9dae99fd8081602e"
+    },
+    {
+      "path": "maps/selection/coverage_stage/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 43171334,
+      "sha256": "c9f910c152a64462155520b1ae790a61270dc076d6d56b22bd87b6a2d13fedd6"
+    },
+    {
+      "path": "maps/selection/quality_topk/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 47257542,
+      "sha256": "d5200ad515406b7895a606599a9a6d3ed00fb8211792855a6fa521ff8685b745"
+    },
+    {
+      "path": "maps/selection/tracklength_topk/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 47257542,
+      "sha256": "4b726c24af63e38808ca226f4d51a13772fa2cb329e24eca0b981abe831ef5b3"
+    },
+    {
+      "path": "maps/selection/spatial/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 46596486,
+      "sha256": "6f35c044062408dcad2ead050a99b56b6538f25eb9923d4c0db2240a94bec68e"
+    },
+    {
+      "path": "maps/selection/quality_stage/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 44476166,
+      "sha256": "f1bdc92f5ec7000ff311c7886b66924b23773688467784c26bf018dcf3787b3a"
+    },
+    {
+      "path": "maps/selection/coverage_stage/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 46512902,
+      "sha256": "2c90435467ff383a968ca18154b4f566f3b8713df30f47f218a9bd6bafd0163a"
+    },
+    {
+      "path": "maps/selection/quality_topk/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 50521862,
+      "sha256": "8d084db361788f50fcaa71857ba9f445bfc48f3d1ecea408ea0f67f8116176af"
+    },
+    {
+      "path": "maps/selection/tracklength_topk/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 50521862,
+      "sha256": "16687a136430e07b28ac34ac9d56cce6050b9c601799d1f3b2a9a45527eda1ce"
+    },
+    {
+      "path": "maps/selection/spatial/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 49878982,
+      "sha256": "f14d0741963d9073275406976afe0024a8f71f877f4bbf93792397f16cd4e620"
+    },
+    {
+      "path": "maps/inputs/raw_only/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 28107334,
+      "sha256": "07672c623d2076ad1ba10d3453c4d5e48d9b4e44924089301711fb58821c9c22"
+    },
+    {
+      "path": "maps/inputs/raw_only/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 20850822,
+      "sha256": "d15fb13dcf59bb49039c288bdd82d428ffc0cea5b9946bf730059a03dcac4a2a"
+    },
+    {
+      "path": "maps/inputs/hybrid/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 26491206,
+      "sha256": "5f5a1f730f62275951728d66fc706b5900947de8929a541184880c152a88c370"
+    },
+    {
+      "path": "maps/inputs/hybrid/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 17254214,
+      "sha256": "44265c034e979ba2d8e3fe5b667dc0e4b7329b50cce97d7371e61625f63e6c7b"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 28111110,
+      "sha256": "73b6adcdca72a497418d30f0a27adcf4d9b2a7a9f849b87979e6d5ce251cf1ce"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 20851206,
+      "sha256": "1be76230da335503d8ee00e8501f1f33e52574f722d8b063ae0e65d8c185eab7"
+    },
+    {
+      "path": "maps/inputs/raw_only/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 65443910,
+      "sha256": "f2122d124c702132299b4e74a9c8ff21284873a615dbb98fbb7718bb42f9b399"
+    },
+    {
+      "path": "maps/inputs/raw_only/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 65444230,
+      "sha256": "527c3b933257daf0b303b2a49a975da5e39ee56bd00381e72ae25c5e142187c5"
+    },
+    {
+      "path": "maps/inputs/hybrid/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 69125062,
+      "sha256": "520c43ecf4ae244ea2abc95842406dee46ae03b54392b5ebcf425e476e58c5ba"
+    },
+    {
+      "path": "maps/inputs/hybrid/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 11613510,
+      "sha256": "4b8a5ce8b92302cc1bb0771130ac9cfeda8dc4824f7fb6195b7f71530c3b5ab8"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 65445574,
+      "sha256": "0711cd9e91cb86602e8d6c99e4c88f2ea5d926ef6c6fe6dc842e7076ff687995"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 65445638,
+      "sha256": "08230ab1f560a7e862ea81d2dda02a193d3369b4a6a61b54d8a44cafc179ac50"
+    },
+    {
+      "path": "maps/inputs/raw_only/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 120407366,
+      "sha256": "cdd442e4bfcf8af8053ed98e0f040dfe0eb35e0de8080ed9d6f03db8e0a9428e"
+    },
+    {
+      "path": "maps/inputs/raw_only/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 33805830,
+      "sha256": "b0cd79183c093707b6336f1e3ab94d3e8492de8c5c570c5b043621b42d24cacd"
+    },
+    {
+      "path": "maps/inputs/hybrid/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 115699974,
+      "sha256": "d097d7036e5843009468b57ef0511256586199f7e2fd0b242b773c60620cc054"
+    },
+    {
+      "path": "maps/inputs/hybrid/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 12687750,
+      "sha256": "2ce3f9aa432e192a82681403db07e01de4b8c7f5c4e22a07a6af2e6d62fef034"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 120410182,
+      "sha256": "25a1bb6eb49b4d1af2ddfae7f8f5df101ccf44d02859d0a72f3640d8b409d7ee"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 33805126,
+      "sha256": "db6458c84fb6ecf2c0b319aace6c946c4c7b853ca65c8f00ae5ab600786da5b6"
+    },
+    {
+      "path": "maps/inputs/raw_only/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 168404230,
+      "sha256": "ad4123a74eac860ad76af2361a645741b26ac15f13d9fa1518d8c2d27fad8659"
+    },
+    {
+      "path": "maps/inputs/raw_only/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 114193798,
+      "sha256": "8bcc82331e052d50a0f55067aef5b9a7db7d4f3b33a2e576a920cf5d1cbd5d3d"
+    },
+    {
+      "path": "maps/inputs/hybrid/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 202506502,
+      "sha256": "4d35b195eb13a2cb36d211e3b56002e2a8d589f78ce4293890adc37e4472e17d"
+    },
+    {
+      "path": "maps/inputs/hybrid/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 55672390,
+      "sha256": "6ecf5c02df711730c1f25484dd23df05938182150f18da7125098edfd810cbf0"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 168404934,
+      "sha256": "888d50b103703ddfc3ac98e97145983d3f7fda49b72e184fae9acad917747cce"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 114194182,
+      "sha256": "a1395e79acd4f9372637768f545cd065c70e2f7c5346c64d25a817b1813cfac3"
+    },
+    {
+      "path": "maps/inputs/raw_only/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 167855110,
+      "sha256": "66d84ff23badbb1ff544566c000894f14cb0e24d9dc3499bddf0dce7897477d2"
+    },
+    {
+      "path": "maps/inputs/raw_only/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 123785030,
+      "sha256": "33fadaf850a186d26718b8e43714a9779d27eb24b20e2283d7cfe7df39fb816b"
+    },
+    {
+      "path": "maps/inputs/hybrid/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 175878278,
+      "sha256": "a8a60c66592f15bd2d1b39ef013195e70ee5fdf0c1ba2930a2a75fa78eb152b6"
+    },
+    {
+      "path": "maps/inputs/hybrid/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 66718982,
+      "sha256": "60b712187b4a56d3eda5f278550b3c2c5c34effb0d0455520f56c172789ace6e"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 167856838,
+      "sha256": "6a4b97494845edc59c1ea66932a281997fd4ac191f54762ba07a6372aa54c760"
+    },
+    {
+      "path": "maps/inputs/real_gs_assisted/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 123785414,
+      "sha256": "05afd2d73efdfaade55682ee1271d4a1a214424f11b231c5564e4eeaeb871930"
+    },
+    {
+      "path": "datasets/7Scenes/chess",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/chess/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 60000,
+      "sha256": "9468b323727e45438d521a1aacec349030d6a3c6fbf1a382552f32007d75c733"
+    },
+    {
+      "path": "datasets/7Scenes/chess/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 128,
+      "sha256": "95aa3c0373cb863294575beb6264bd506bce8a92d5852ad3212de839316f2ab1"
+    },
+    {
+      "path": "datasets/7Scenes/chess/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 864857,
+      "sha256": "e5e405bea68c73b4278ce5f7c23c4cc4f72cd12bbffd3a5199f4160083608723"
+    },
+    {
+      "path": "priors/indoor/7Scenes/chess.ply",
+      "kind": "prior",
+      "bytes": 111169860,
+      "sha256": "666aee36f7420d92a30cb3604fd6bec42f99399fcfe0fd27cded92d865535a13"
+    },
+    {
+      "path": "maps/7Scenes/full/chess.pt",
+      "kind": "deployment_map",
+      "bytes": 204010758,
+      "sha256": "02de0b648ab2bc20d173fadfed4d00882d8cbe8ce56528be7ddc64231124f5bd"
+    },
+    {
+      "path": "maps/7Scenes/compact/chess.pt",
+      "kind": "deployment_map",
+      "bytes": 20231430,
+      "sha256": "85edc4460a7269db83f3d464c62684da3371a57ccb266aecffc31962e35044d8"
+    },
+    {
+      "path": "datasets/7Scenes/fire",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/fire/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 60000,
+      "sha256": "cfd1d0413808a42dac83ae5ef0c4e49fcb4df550f69b75db296a7237ea60a37d"
+    },
+    {
+      "path": "datasets/7Scenes/fire/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 128,
+      "sha256": "47f480e46a5ebca457c7013af681b8c40a4b4af4a501e4348d145c90a298ae3e"
+    },
+    {
+      "path": "datasets/7Scenes/fire/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 579481,
+      "sha256": "a05ee7685525961a4783dedef79149de512eefdb381c6ae9b8790a0d3d992ae7"
+    },
+    {
+      "path": "priors/indoor/7Scenes/fire.ply",
+      "kind": "prior",
+      "bytes": 98436964,
+      "sha256": "fbecdeddfdfd8a3a9c1788ee2dcd022a7ff32d8afd60a77be09bcdd8151ebd27"
+    },
+    {
+      "path": "maps/7Scenes/full/fire.pt",
+      "kind": "deployment_map",
+      "bytes": 112959366,
+      "sha256": "c1f5bec29964b8296817d3036fa024770df8aef6bcbd5fe842c490f43187925b"
+    },
+    {
+      "path": "maps/7Scenes/compact/fire.pt",
+      "kind": "deployment_map",
+      "bytes": 15202502,
+      "sha256": "39717f6af30048766970f29a89668c4122c9e7426b9ae75e550459e64dead14e"
+    },
+    {
+      "path": "datasets/7Scenes/heads",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/heads/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 30000,
+      "sha256": "17a29402cccc405ff385af5e0724489a782446d6b4c3d17114dac807b1c2b964"
+    },
+    {
+      "path": "datasets/7Scenes/heads/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 106,
+      "sha256": "80da9f4ef35187b5bfdd5dae810427dcaac65126f610ca1825b8fa4dcb4d5d8a"
+    },
+    {
+      "path": "datasets/7Scenes/heads/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 293618,
+      "sha256": "109a205c1e6c1c8ebbd8269e0b8b5048ed0a883286d2f51adc7343ce86a69738"
+    },
+    {
+      "path": "priors/indoor/7Scenes/heads.ply",
+      "kind": "prior",
+      "bytes": 120913512,
+      "sha256": "fc983fb86e8c51dc568dd8927cae4453dd619f3c870c1544aa8dc3be87f0b808"
+    },
+    {
+      "path": "maps/7Scenes/full/heads.pt",
+      "kind": "deployment_map",
+      "bytes": 52552518,
+      "sha256": "967bffa0ed5f2742a21123cc693ad8d8ed870a1014e6b7770179a3a336ca553a"
+    },
+    {
+      "path": "maps/7Scenes/compact/heads.pt",
+      "kind": "deployment_map",
+      "bytes": 9618118,
+      "sha256": "c80e6ef3cc91e5f570de3c4719170bdbcb0e6e96ae9ca153f3ff55d9f603d787"
+    },
+    {
+      "path": "datasets/7Scenes/office",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/office/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 120000,
+      "sha256": "60c83c64b3c68a7e164be75543b9af92e60ce858c59138d67a365c4658644c6b"
+    },
+    {
+      "path": "datasets/7Scenes/office/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 128,
+      "sha256": "a61a57292e0b81b69122cd9e03893e7fd01d61bc93eb804eb68a97423fa55f06"
+    },
+    {
+      "path": "datasets/7Scenes/office/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 1445967,
+      "sha256": "d226a8569d36653405204c9d081a4fcc5a026eba22d0813eea4e4124be629572"
+    },
+    {
+      "path": "priors/indoor/7Scenes/office.ply",
+      "kind": "prior",
+      "bytes": 142135900,
+      "sha256": "6c914a5e4416f136c13662833732f98de11bd5c625807fb6ec9faa3bf4cba3ea"
+    },
+    {
+      "path": "maps/7Scenes/full/office.pt",
+      "kind": "deployment_map",
+      "bytes": 279244550,
+      "sha256": "c053351fa238c44688accc990161b22329a1256ecd9ddbd2ce5414e8c18238e6"
+    },
+    {
+      "path": "maps/7Scenes/compact/office.pt",
+      "kind": "deployment_map",
+      "bytes": 54209414,
+      "sha256": "95652e61f65db3fe2f8e64a71c86e38e2debf9e3ed4190c9dce925c2a6141ce9"
+    },
+    {
+      "path": "datasets/7Scenes/pumpkin",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/pumpkin/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 60000,
+      "sha256": "07674c07d950740e41853caf311a4c593326cc1bfa54a05a8f21134ae40ed5a1"
+    },
+    {
+      "path": "datasets/7Scenes/pumpkin/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 128,
+      "sha256": "49b344a7122eae2c8a166527a2feae2c1e5c9e15b2af28d43bbd60fc4ea61116"
+    },
+    {
+      "path": "datasets/7Scenes/pumpkin/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 874548,
+      "sha256": "3e1f36d3b7d64b8efc501588f797d3e17b4b9533fc5c73583c83df0130835cc6"
+    },
+    {
+      "path": "priors/indoor/7Scenes/pumpkin.ply",
+      "kind": "prior",
+      "bytes": 65284928,
+      "sha256": "53236a600dbf7dded4c23c53b5093b3a6aab9eed0c3817a5c86f2b74cbb70afd"
+    },
+    {
+      "path": "maps/7Scenes/full/pumpkin.pt",
+      "kind": "deployment_map",
+      "bytes": 156070278,
+      "sha256": "7948167c3a002e47fba9eb9912b01ff6c29fe02e64363ee4284afcc11976618b"
+    },
+    {
+      "path": "maps/7Scenes/compact/pumpkin.pt",
+      "kind": "deployment_map",
+      "bytes": 27042438,
+      "sha256": "5638ac096e58ed2e08dbb0d40c83fa53b14eafe45cd256cc8d73c88ba8715e20"
+    },
+    {
+      "path": "datasets/7Scenes/redkitchen",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/redkitchen/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 150000,
+      "sha256": "bb1ecb3579ef1083bb528bc15d2a4e21eef5991ed3c4391ed97f7784e3c36780"
+    },
+    {
+      "path": "datasets/7Scenes/redkitchen/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 106,
+      "sha256": "01c189b8cc4ac404a178d439b5c085aaf55fe4de4dde22c55903c4d3f3721d30"
+    },
+    {
+      "path": "datasets/7Scenes/redkitchen/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 1747222,
+      "sha256": "62b885a85754896b245bdba9befcd13140f23fc1cf4bd4f18ead6d2d0852eae5"
+    },
+    {
+      "path": "priors/indoor/7Scenes/redkitchen.ply",
+      "kind": "prior",
+      "bytes": 147982628,
+      "sha256": "bd35fef8e3320055b595390eee8e695d6ff4de4e76c4e9e57428b1625fe132bf"
+    },
+    {
+      "path": "maps/7Scenes/full/redkitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 345447750,
+      "sha256": "b75499ffd9ffdbfcbf5fe5261fcb6331803c5bb03334d13d3d862acc35ed6167"
+    },
+    {
+      "path": "maps/7Scenes/compact/redkitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 43311110,
+      "sha256": "45804298315589e5069d591cb9cbcb6a961f25a03c5f4dc3d9b896c47f6231ba"
+    },
+    {
+      "path": "datasets/7Scenes/stairs",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/7Scenes/stairs/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 30000,
+      "sha256": "78a1ecdeb8ee6394a24b3ab0d37a0a29fe52ca0445d36995000484ca143c3954"
+    },
+    {
+      "path": "datasets/7Scenes/stairs/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 106,
+      "sha256": "01c189b8cc4ac404a178d439b5c085aaf55fe4de4dde22c55903c4d3f3721d30"
+    },
+    {
+      "path": "datasets/7Scenes/stairs/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 434439,
+      "sha256": "b7ac8c374c2058f694635397bc37bc6a62ab603e86d7edbbea9afe1bb4558881"
+    },
+    {
+      "path": "priors/indoor/7Scenes/stairs.ply",
+      "kind": "prior",
+      "bytes": 78477276,
+      "sha256": "467a397aa89d8f05c79212f36e61d28bd2fe267a3531b8c8ac1a75e53537c964"
+    },
+    {
+      "path": "maps/7Scenes/full/stairs.pt",
+      "kind": "deployment_map",
+      "bytes": 91040582,
+      "sha256": "c4767da46b775105edc175e26fde8a98fd196ac3fd4f1cb8236fb355b4d43d29"
+    },
+    {
+      "path": "maps/7Scenes/compact/stairs.pt",
+      "kind": "deployment_map",
+      "bytes": 20184390,
+      "sha256": "43b246dda9a8ad1af5b1d07b06c37f79ae06f85d68229257badfc248829f49d7"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_kitchen",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_kitchen/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 9996,
+      "sha256": "56f75387b6a4f35c3a97f25e34f69c72810970f4f8a0a8d112f2f774e18d7e27"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_kitchen/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 105,
+      "sha256": "30b422fc99b746c2b81caf0c16d7efe45fa4eeed4b22c5402e73b549a419d865"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_kitchen/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 153574,
+      "sha256": "fc0578866e10b588bf706e1b8c9c533ba39f78f621f1d05963c5a1344efdf4ce"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt1_kitchen.ply",
+      "kind": "prior",
+      "bytes": 205245036,
+      "sha256": "07b8ab1f21530e0ce521890e2dad66f771fe6fe83b933e578c31d80a3479bb39"
+    },
+    {
+      "path": "maps/12Scenes/full/apt1_kitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 56837062,
+      "sha256": "57b988fa0ce433bd953981a183774f0ee5b4538cb4b47903086f7c321f945f52"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt1_kitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 12085062,
+      "sha256": "2bdc36aa6c65af138f1d3ab144fe1c8402caef288776806767b5fe648e550d35"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_living",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_living/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 13804,
+      "sha256": "32ac06e85c37a218d49d6d3e59d455069c9e18b84c83bf3d8f0bbb7cd4d85f33"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_living/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 107,
+      "sha256": "bcdae7983ddeb1b6f585a86f55a7dc3f71d04129ca9d9c0603a477692a6ce0d6"
+    },
+    {
+      "path": "datasets/12Scenes/apt1_living/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 213636,
+      "sha256": "dac8a3259d15a4f407a533251f44ec7f3ecde310a648dae9f4e1a484687c70ff"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt1_living.ply",
+      "kind": "prior",
+      "bytes": 154365912,
+      "sha256": "0242c633355bf8fe1166d293bef18f8410189d604ee97310112af4060372d2ba"
+    },
+    {
+      "path": "maps/12Scenes/full/apt1_living.pt",
+      "kind": "deployment_map",
+      "bytes": 68988166,
+      "sha256": "a2246669b403a414a4a8c9b208f78e52e4ad0af814eca41d99e2a6d9fb161e5f"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt1_living.pt",
+      "kind": "deployment_map",
+      "bytes": 14151174,
+      "sha256": "25f74f714399c73ca63ce2ea4291fcc253e297db2a267cdb72b6659115ba5c02"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_bed",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_bed/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 6832,
+      "sha256": "97bdc34d7172d54a423767e30b970c25e0c52a2fb785a9af326104b96b397cbd"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_bed/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 107,
+      "sha256": "a98b1ef78eacc847b262fa93236e7421d9d54b549ccd7d9a15b29ecfd2821760"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_bed/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 160050,
+      "sha256": "68f2add15856fd5a910fd0f8dde53b2d99a234d33d38d589d283264c40f2a145"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt2_bed.ply",
+      "kind": "prior",
+      "bytes": 165381292,
+      "sha256": "2b32956ab3c9720f7d3c614eb661dfb7ea64d765ef119ded1c8ce104e18f4174"
+    },
+    {
+      "path": "maps/12Scenes/full/apt2_bed.pt",
+      "kind": "deployment_map",
+      "bytes": 84012358,
+      "sha256": "b487f0c2087cde4dc9b3bc467b8c81fd26e1c687c587724687b73e709ab3cdb9"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt2_bed.pt",
+      "kind": "deployment_map",
+      "bytes": 23287238,
+      "sha256": "ce8046fdc68eb11c018c3ee6bafe9f511350462701f9597e423e688fe1b6a9d5"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_kitchen",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_kitchen/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 6440,
+      "sha256": "ba1baa7deef0b3768cf624d7ecae4162dcc14772ccee87a31fbb84f02016df99"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_kitchen/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "951d0a2bd1a25dc6a8ad8d1b7363ad873aea197086d355be9bbfffaf96ca789e"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_kitchen/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 142451,
+      "sha256": "fea47cd106847b909dbdf3f592580c653645af2aead3a2f44530b71aacab2b75"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt2_kitchen.ply",
+      "kind": "prior",
+      "bytes": 274736237,
+      "sha256": "996fee9938f5be3c1f0d63c6054accc876a7a3cd87848710f5e62d04eb0d71f0"
+    },
+    {
+      "path": "maps/12Scenes/full/apt2_kitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 43284870,
+      "sha256": "d4fcc828e12501c222110501def04d06fa531d7974fa0035d0e237cb72cb2efc"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt2_kitchen.pt",
+      "kind": "deployment_map",
+      "bytes": 11100550,
+      "sha256": "520ee3120ad8ca309c956a083d4a8ee3f843266778579e56511de3b5a4f059e2"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_living",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_living/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 10052,
+      "sha256": "e2f02abaf9a08b4b9c3ef669e919447287d94a35094f59254fb57f7a51f63d30"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_living/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "fa98d75a48cd2395f28c59ee3a123b61c44bb2e283e82c891b624c8e890b3e8d"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_living/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 152744,
+      "sha256": "dfec3ade0d8fd3a71dffa1219a7e8cd01307a0a7db24a8cd7fd17a91838bbe1f"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt2_living.ply",
+      "kind": "prior",
+      "bytes": 190761928,
+      "sha256": "351ece9e63de3a113b2c47f6045dd4d5c073ee75671773ba6363f98228fae43e"
+    },
+    {
+      "path": "maps/12Scenes/full/apt2_living.pt",
+      "kind": "deployment_map",
+      "bytes": 74624774,
+      "sha256": "8475a81210219a9b694a0dcb223402d8f6adf008dba059d17cb880f3440257ef"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt2_living.pt",
+      "kind": "deployment_map",
+      "bytes": 21276422,
+      "sha256": "a353939f66438ba589add4b59a0e1d59579f1c9733bbc573fe89dd2fc5f2136b"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_luke",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_luke/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 17472,
+      "sha256": "9ae56a8ded898513af2916e166cf2d9d2d44ccdf5e204ac84dc44be8c04cea04"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_luke/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 107,
+      "sha256": "817d4826fa6ab44374fe91f97d44cad0e70e705b0163834862f18a21c63fc1f8"
+    },
+    {
+      "path": "datasets/12Scenes/apt2_luke/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 279722,
+      "sha256": "8448a91a1ddd3b7a822f34f1628d1bd0bb0a24f88512c59e74f5c5fa25da61e1"
+    },
+    {
+      "path": "priors/indoor/12Scenes/apt2_luke.ply",
+      "kind": "prior",
+      "bytes": 161752524,
+      "sha256": "7790f48972db68281420dac52cdfd2adc67bfdb31426f10e36fd1cdcceacd97a"
+    },
+    {
+      "path": "maps/12Scenes/full/apt2_luke.pt",
+      "kind": "deployment_map",
+      "bytes": 119077190,
+      "sha256": "5766173e3e75f54019551b3db89515f7a3dd835ec84f27b0d151f6dfe413cd28"
+    },
+    {
+      "path": "maps/12Scenes/compact/apt2_luke.pt",
+      "kind": "deployment_map",
+      "bytes": 25936838,
+      "sha256": "a36b3de751a7304ee4d162f9df5c54a7e15d6f9ba546d02289db3e789c632f3b"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates362",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates362/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 10808,
+      "sha256": "bcb3ee86a4726de1572889e976fafd4edf4cde05651591e303427e303eb8dc01"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates362/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "2a5426a24a3554305bd6f25534b32eb7458bae3bd7a3f403027d4fd52a17a6f9"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates362/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 549996,
+      "sha256": "d826daa222ce58c80f365f0149b4d5627407bd853cda43e7cbf32c565525c5aa"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office1_gates362.ply",
+      "kind": "prior",
+      "bytes": 400819821,
+      "sha256": "aed0d908701c2df555164fa17c53e927f3496a32491120a32935c09a241f82bd"
+    },
+    {
+      "path": "maps/12Scenes/full/office1_gates362.pt",
+      "kind": "deployment_map",
+      "bytes": 174671302,
+      "sha256": "78b05763a1f3e97afae6911f6d5aaf0952c63c60913e50672c386093ee0682de"
+    },
+    {
+      "path": "maps/12Scenes/compact/office1_gates362.pt",
+      "kind": "deployment_map",
+      "bytes": 49142854,
+      "sha256": "3943417578be4c1fd58c94f69bdaf2039498bdb637e931f7229b8da8a066c96c"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates381",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates381/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 29484,
+      "sha256": "96af24b4652b9af337c5a06cf098175876ac1109fbbe7f3b47cb4aae75948a8b"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates381/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 107,
+      "sha256": "46045755d62d6e9f8c85292c7fac3670b45c9b29c3560a1187889cc434ea7294"
+    },
+    {
+      "path": "datasets/12Scenes/office1_gates381/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 560545,
+      "sha256": "bbff759d806ba514e73795bfb82de34f827b0dd9a1c35fe25eeae851a3e6a435"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office1_gates381.ply",
+      "kind": "prior",
+      "bytes": 421335585,
+      "sha256": "d913b545c56d75764ba61fbe60450c117c77e77891242a34953638b5e962ef6c"
+    },
+    {
+      "path": "maps/12Scenes/full/office1_gates381.pt",
+      "kind": "deployment_map",
+      "bytes": 175536774,
+      "sha256": "ce4bc971ac001adb5cebfbd38a722cd32bcefc4267e60cbb9bf680993478c5d3"
+    },
+    {
+      "path": "maps/12Scenes/compact/office1_gates381.pt",
+      "kind": "deployment_map",
+      "bytes": 35991622,
+      "sha256": "478a23cd0e80546088f774ef8a5a72601aa621bea02fdcacb59a517f0de5f16e"
+    },
+    {
+      "path": "datasets/12Scenes/office1_lounge",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office1_lounge/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 9156,
+      "sha256": "05610829d02d00421719ea9657186f72c5f68fab9930eafb7fc8f4522b5bbcb0"
+    },
+    {
+      "path": "datasets/12Scenes/office1_lounge/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "f4d5fb45d88585f4b6f98903ea5f8079caa5b94b14661b473c9ea6384e2cb67b"
+    },
+    {
+      "path": "datasets/12Scenes/office1_lounge/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 176966,
+      "sha256": "67eb45b768ddd956b074156582a23bb4b66452744c3114ba47aa72d94c2f0eb2"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office1_lounge.ply",
+      "kind": "prior",
+      "bytes": 175205708,
+      "sha256": "c45e5e3c6573a1e6a3b7664dd1ae10258dab4f3aaf0a50c0fd33f460492c949d"
+    },
+    {
+      "path": "maps/12Scenes/full/office1_lounge.pt",
+      "kind": "deployment_map",
+      "bytes": 86360326,
+      "sha256": "b416a5eccfd8fb240ec8a748361a6b58a442b7d96bc8808683cf6d9034bde816"
+    },
+    {
+      "path": "maps/12Scenes/compact/office1_lounge.pt",
+      "kind": "deployment_map",
+      "bytes": 53273990,
+      "sha256": "065842d23dff6308e6fb99680ee7a77009f95575a650e944f067bd0a9778f816"
+    },
+    {
+      "path": "datasets/12Scenes/office1_manolis",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office1_manolis/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 22596,
+      "sha256": "fa7eafe56a63b49324924b42615f503cb9f1b7b54e770e87512e5a2134778be0"
+    },
+    {
+      "path": "datasets/12Scenes/office1_manolis/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "b53cf9cf1cc0b5e6f1bd737abe337bf6f1b1560c180034d6e21e0ce244762bbf"
+    },
+    {
+      "path": "datasets/12Scenes/office1_manolis/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 342566,
+      "sha256": "56536dca66de9c3179ee50b3e3e444ad15491199366782dd67b63a4d72aae162"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office1_manolis.ply",
+      "kind": "prior",
+      "bytes": 389708793,
+      "sha256": "d479193165fd799dc9051afcfdb32a6a0b85ef68849b807f2c6ef546bb4023bd"
+    },
+    {
+      "path": "maps/12Scenes/full/office1_manolis.pt",
+      "kind": "deployment_map",
+      "bytes": 120979398,
+      "sha256": "78507d165760f587d50f5ef5399e18215418503c9cbfd155ba70d0bce5cb81c2"
+    },
+    {
+      "path": "maps/12Scenes/compact/office1_manolis.pt",
+      "kind": "deployment_map",
+      "bytes": 36390406,
+      "sha256": "bbab8cda05f86ff0add8b69c8bd5bdb7c074fa9e07ffcdcf5b1aa4737afc7be5"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5a",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5a/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 13916,
+      "sha256": "8da57489ff1b556e97cfb5fa142d7404e2584b5801462d6bc57c196086b7ec1d"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5a/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 129,
+      "sha256": "a4f6a16b1e98e97d84a68debf2502ac97a2ad8943ebb02c28d4ea5972d78e039"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5a/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 210359,
+      "sha256": "14014678701c54eaa947614eee9bcacda1a16687c14c4d1a036d40c4511abb22"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office2_5a.ply",
+      "kind": "prior",
+      "bytes": 170019000,
+      "sha256": "84713e52ece94a9308b021f892de175b4f5eb5349dfae3b6dfde3da942fbdb6e"
+    },
+    {
+      "path": "maps/12Scenes/full/office2_5a.pt",
+      "kind": "deployment_map",
+      "bytes": 64128518,
+      "sha256": "791259b6b2cb614c48c8d6c57f5b5b638d44f21f0fafc8b5c82d477cd9a2a0f0"
+    },
+    {
+      "path": "maps/12Scenes/compact/office2_5a.pt",
+      "kind": "deployment_map",
+      "bytes": 64128518,
+      "sha256": "791259b6b2cb614c48c8d6c57f5b5b638d44f21f0fafc8b5c82d477cd9a2a0f0"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5b",
+      "kind": "dataset"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5b/sparse/0/list_test.txt",
+      "kind": "dataset_metadata",
+      "bytes": 11340,
+      "sha256": "b941663f0a47ead5f80fd43eb3bc823e315d2b3018fb6818e7e244dc0bc626ac"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5b/sparse/0/cameras.txt",
+      "kind": "dataset_metadata",
+      "bytes": 107,
+      "sha256": "9cbd8f850011b6d6d86d507c426417ff045137c567364fe7d87c4125cd7ef753"
+    },
+    {
+      "path": "datasets/12Scenes/office2_5b/sparse/0/images.txt",
+      "kind": "dataset_metadata",
+      "bytes": 252369,
+      "sha256": "75592b8d04f4c2ecb1362d5485a7deb3212dfd96a2fbab24cb5cac53513ec86b"
+    },
+    {
+      "path": "priors/indoor/12Scenes/office2_5b.ply",
+      "kind": "prior",
+      "bytes": 187343732,
+      "sha256": "3586b5d9aafe482975e3385cfb68a318064a28c33753fca8d7583e1e51033357"
+    },
+    {
+      "path": "maps/12Scenes/full/office2_5b.pt",
+      "kind": "deployment_map",
+      "bytes": 103588550,
+      "sha256": "f9f76e0491c9c85335214c7bcf33d5d2cbb8ae600dd010ebb823e4d4e221f7b9"
+    },
+    {
+      "path": "maps/12Scenes/compact/office2_5b.pt",
+      "kind": "deployment_map",
+      "bytes": 103588550,
+      "sha256": "f9f76e0491c9c85335214c7bcf33d5d2cbb8ae600dd010ebb823e4d4e221f7b9"
+    },
+    {
+      "path": "priors/vanilla_2dgs/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 847313957,
+      "sha256": "5d2f854b84dd0f04d56f6660584d775758e7299147ca381bc7e0842f24b48a13"
+    },
+    {
+      "path": "observations/vanilla_2dgs/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 28197062,
+      "sha256": "e327b85ee089f35923fc37f3817286eb54db42856fc0ed48744fe296cb206f99"
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 14027974,
+      "sha256": "c66fe2acdd6e02182927059b5fb3fa1464a156940356101123f84049f9d45f98"
+    },
+    {
+      "path": "priors/vanilla_2dgs/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 210950732,
+      "sha256": "f37362b571181ad0f114b8eb620ac82c8b8e447c2966b05c2eaa18c49cea9816"
+    },
+    {
+      "path": "observations/vanilla_2dgs/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 78211014,
+      "sha256": "507fadc5504dab4d71baa95f25d2dfe013744b33842d3278b5a593ad7789f69b"
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 14346374,
+      "sha256": "7787c915d357f092038b3fcbabc41243078a403d37d2689796dd0e935b6ebeb1"
+    },
+    {
+      "path": "priors/vanilla_2dgs/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 197713732,
+      "sha256": "e76de6d071643cd16475fae3e37ab2d7553babddbd66a8accc71107bc2c92d8f"
+    },
+    {
+      "path": "observations/vanilla_2dgs/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 80126726,
+      "sha256": "3dde29dc9b0060b079303275bb6fde4ae6834a3d721d78fa9625fb66b4a9506e"
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 9976198,
+      "sha256": "0eac06d0bf4f153690c2b4fe5003c5ce16f2a76bf3206070dfc7a626151716de"
+    },
+    {
+      "path": "priors/vanilla_2dgs/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 150914776,
+      "sha256": "9dfb5368a364427bb7088515853ff1571f5b3c21af8e91c30e2636533dbada92"
+    },
+    {
+      "path": "observations/vanilla_2dgs/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 188422982,
+      "sha256": "10e9bc66d2e0aec4516a22852429fb9431ae89fe1bd32925801c738e2d8380ef"
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 64370694,
+      "sha256": "25515edfe9488b7fbdd74674227708ec6003256de3db20e3c76a4383c5de3b84"
+    },
+    {
+      "path": "priors/vanilla_2dgs/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 108230880,
+      "sha256": "b010e9c02c795db4c94bee29346cc5114ef8cf139f20e4a74f5f51016cd47085"
+    },
+    {
+      "path": "observations/vanilla_2dgs/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 170188422,
+      "sha256": "9af96bebf4793841e16291ba6baf540f42a190a80c2cc07c2c14b3622388d308"
+    },
+    {
+      "path": "maps/priors/vanilla_2dgs/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 94121542,
+      "sha256": "7c6683eec9341f1fd5997035743e5c65ca21e90b3b85b1b8be83eaabe09e319b"
+    },
+    {
+      "path": "priors/i3dgs_raw/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 224906035,
+      "sha256": "4f0a931c36af0a65298e4bcce957b549da7c929dd2484e779759ffe8d7b99ffa"
+    },
+    {
+      "path": "observations/i3dgs_raw/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 26709382,
+      "sha256": "6bbf8bdc45bb529217e19dfdbcdad916f437d225e4754ffcea0a70cd208ccb11"
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 16081478,
+      "sha256": "e0e4d6b3009c0319d6b028d4c1018fd402b1b821a63c49744509e4a68ddd4ca1"
+    },
+    {
+      "path": "priors/i3dgs_raw/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 204016251,
+      "sha256": "9a4ae8323fc687ed17009b4d8f6b9ae319aa9c2a06a789bcf9538c12ab546831"
+    },
+    {
+      "path": "observations/i3dgs_raw/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 92182854,
+      "sha256": "2c371fc58e462ca307c31a8044a92661b37f040311ea8ee5472611d4eab0fed7"
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 91381062,
+      "sha256": "ff76abba9b5aaac35746f1f8a850e5fa9efe9fa86cc687b5ac846e0a20e7b60b"
+    },
+    {
+      "path": "priors/i3dgs_raw/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 219384811,
+      "sha256": "ec49c6d0cc26a728b920b0b99674720b1cc271190f140404b922034c3a2f9d99"
+    },
+    {
+      "path": "observations/i3dgs_raw/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 117486278,
+      "sha256": "a57bb1ac92a971c63bf593c27fbe9d4c98738164712e951c760a56ceed2acb42"
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 25010822,
+      "sha256": "ffab3d6797135535b1195cbd0f62ba585cdb3223cb67341f75b80dcfc351ab56"
+    },
+    {
+      "path": "priors/i3dgs_raw/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 660001204,
+      "sha256": "5681c835711a1c050b67741c1d07abba56dc9b8e34db1e1fcf5b4446e29f8b6c"
+    },
+    {
+      "path": "observations/i3dgs_raw/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 211728134,
+      "sha256": "fdc8d7746547bdf392a2b6ecf21e0cdade0ad547f56d8db4bb8c3398032fde04"
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 69891398,
+      "sha256": "23e2ec7c77e7f8c9ee08645abfd9049919a7fd457071ac6b05dea3d7f751f5ed"
+    },
+    {
+      "path": "priors/i3dgs_raw/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 651441980,
+      "sha256": "2bc93b3e0b06d90c2405285c6733e886871fec586484513115f9d192f5b79368"
+    },
+    {
+      "path": "observations/i3dgs_raw/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 148902342,
+      "sha256": "246e9e030730df2d910019f58e76c9de3942e6085ee661338aa8fecc9372839a"
+    },
+    {
+      "path": "maps/priors/i3dgs_raw/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 148902342,
+      "sha256": "839d148ae47e37f50cedf2c964c79f4f0367279e14580396548f3f06be2e5815"
+    },
+    {
+      "path": "priors/i3dgs_1k/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 224906035,
+      "sha256": "e610042dca9c08232813f4d9469d6a7858f42dba72fdf9aee9e16cc195614a72"
+    },
+    {
+      "path": "observations/i3dgs_1k/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 24934598,
+      "sha256": "f685bac1db013676ff52746438413d15bd5ec4855b29d881eb8e1d214a2ced44"
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 14057158,
+      "sha256": "4d4f2d9bec5ad66f8725417cfffc9a1a7c45caee61daf3845316ba2179d22ee5"
+    },
+    {
+      "path": "priors/i3dgs_1k/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 204016251,
+      "sha256": "6f61d9b6be14a580b90bbab98df2d42e295247740b75ee5f6edcb9235b074ba0"
+    },
+    {
+      "path": "observations/i3dgs_1k/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 81846214,
+      "sha256": "a8a99cd26b7c5e51b3cc7244149abfaf1037ca55c2d6f5ba289eb2a4ee4c871f"
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 22230662,
+      "sha256": "1a4795d1a2658deed9cfc640b661ac7490c3c220603fd40e75b142abd1e5c12f"
+    },
+    {
+      "path": "priors/i3dgs_1k/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 219384811,
+      "sha256": "6f51db0d9ab5bb38b2727ac48780fc79768c13f2a8ff6de4582f9ea510b7af9d"
+    },
+    {
+      "path": "observations/i3dgs_1k/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 97501958,
+      "sha256": "7119b9ddf800f4b5c7900adde0655159ce4c057e50e3875d1ba93875c01ddc43"
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 13552902,
+      "sha256": "ce0257835b11ce79a0ef4fe5eef0ad15e4f3fa7820cc4f60976bae3f18cc8191"
+    },
+    {
+      "path": "priors/i3dgs_1k/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 660001204,
+      "sha256": "7028a972e29a78b152d384b07227a07d15210bb421f97bfe3ae029a2f2c53fb3"
+    },
+    {
+      "path": "observations/i3dgs_1k/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 192563398,
+      "sha256": "5475d943aeb9b02573888d0279137342d605d2005a03922a9ca54818e4bb5d18"
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 57325766,
+      "sha256": "b9abc90313498cea98e0d60af15764f02ddc18a004b4fa534bc6d21819e2411e"
+    },
+    {
+      "path": "priors/i3dgs_1k/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 651441980,
+      "sha256": "22d8837093801c28f7dfc427b01f87bc317c292f2b1f1324c14006d6052e40c0"
+    },
+    {
+      "path": "observations/i3dgs_1k/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 137415174,
+      "sha256": "f4b93b5b3657ef33be03e73fbba384a2df937bcdfa8c407eec44539f364acf1c"
+    },
+    {
+      "path": "maps/priors/i3dgs_1k/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 137415174,
+      "sha256": "42df11b25ae35083b84ca3aba616f6caf9e01aa638abf37d90f5fc9aa27c536e"
+    },
+    {
+      "path": "priors/long_lrm_raw/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 659556788,
+      "sha256": "d60335a3d98c16039aec338749b7a3f57cca4876d5e2a825bd0fd34129ddb435"
+    },
+    {
+      "path": "observations/long_lrm_raw/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 41344262,
+      "sha256": "37ed9f6221b933f57604c460d64888034c436511511056e4a3e9a234c1b875c3"
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 26600838,
+      "sha256": "b61dabff3838ebbea278e1e0ac07afc0e1c6e3442b5795c23ec6c4fe0c74a07a"
+    },
+    {
+      "path": "priors/long_lrm_raw/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 579741708,
+      "sha256": "69757a01e460cfecb22839bba110ad2179ae78f863995ae635041c5c0b2a24ff"
+    },
+    {
+      "path": "observations/long_lrm_raw/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 123394310,
+      "sha256": "c651c769f1bb2a47c40e5bf0783539dc0d948090bd0363cf2da3524124c4036c"
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 36571014,
+      "sha256": "849ded4d5e127a8819310f05a0f535ed30ad925402ce285622dc884b22863e5e"
+    },
+    {
+      "path": "priors/long_lrm_raw/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 626095884,
+      "sha256": "e27704b2fc9fbd2382e79a77b3ed71ca625024e0d48517b0a9f14137c7a4fa2b"
+    },
+    {
+      "path": "observations/long_lrm_raw/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 150204230,
+      "sha256": "a2ab7fd4390b14487caf8d378274b79df828adf78da63154679ba985e3854d6a"
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 29507334,
+      "sha256": "eecaff0a4f0e422d47755342de57e74d5ff772d3e1250fb8111675f407633f0d"
+    },
+    {
+      "path": "priors/long_lrm_raw/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 579549260,
+      "sha256": "92c9f4d24dfda187d3f69d83055dd583192d2744e5f7b4a26d59af8e820722a7"
+    },
+    {
+      "path": "observations/long_lrm_raw/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 245921222,
+      "sha256": "4867655a0cc96b7a23c8bd70e9f9c08d0c5fd1c799befc59381646c312497e2d"
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 63077190,
+      "sha256": "a83a3cfe06303ab9078fb73ad94df4d95aca5a9e59a591ab35fcaa818165e83b"
+    },
+    {
+      "path": "priors/long_lrm_raw/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 558634428,
+      "sha256": "29c802418fc580659d5577b02fba63469c12ebd48977923cbee1a7ce777c1b8b"
+    },
+    {
+      "path": "observations/long_lrm_raw/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 245068294,
+      "sha256": "3d818a717d6ba761daddc2d7c41310bd507977058dfe4ea3ec6187ebe0d543e8"
+    },
+    {
+      "path": "maps/priors/long_lrm_raw/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 159246278,
+      "sha256": "8a50b9e56f07a6eb91b385082be83b5fdea108c87b44fa8e67106651fb6a9a15"
+    },
+    {
+      "path": "priors/long_lrm_1k/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 659556788,
+      "sha256": "b9461ed7d373a6ba2fd3411ea4ba171327400e5cef7e40f5af21df1b44504f9a"
+    },
+    {
+      "path": "observations/long_lrm_1k/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 32242630,
+      "sha256": "46c2a492db9835b97a16f7f91d77604073d32fb2b83bc7542ace06e5dfb07cc8"
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 16376966,
+      "sha256": "3fca77199502d3bec6caabe76fea4f2db0658e3066e20a350a3547656341359f"
+    },
+    {
+      "path": "priors/long_lrm_1k/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 579741708,
+      "sha256": "be0475fbc86d55bb058b1ac1e6ff6e3145a3bc0110047200453bf133ebac3a8e"
+    },
+    {
+      "path": "observations/long_lrm_1k/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 80033798,
+      "sha256": "c6f0a0327abc8eeda91bd1596cc9786ea8126571c322a2554704b05228adc37b"
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 11569350,
+      "sha256": "c91026ad5a24299b143218f63b99d0440581bbdfc748e5c45dfd152690e83654"
+    },
+    {
+      "path": "priors/long_lrm_1k/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 626095884,
+      "sha256": "6d00079035cd24156dcdffaf363355a29094a4bde20f1c2a5acaa2a6aaf9d58a"
+    },
+    {
+      "path": "observations/long_lrm_1k/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 93972230,
+      "sha256": "3a2129acac0bb3d076db7f4f51cc69a48290b7eca01aa15a19e394f45d9f5907"
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 9777798,
+      "sha256": "547a3df41bf375f168f62e8648b8d0de3d980873d0d8e2c13a7d2cf030e61208"
+    },
+    {
+      "path": "priors/long_lrm_1k/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 579549260,
+      "sha256": "72453bc2ab2b174031daf69346bc4e05694a40c439dd7d140830542740bd7276"
+    },
+    {
+      "path": "observations/long_lrm_1k/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 222017798,
+      "sha256": "f5cc3f1fdd64085891b8a8629c4e20274cc83240fb3430a7da305896b9779d21"
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 47312774,
+      "sha256": "f90d53c85ec1d74904052c0e501e032c733671c6a0bcd7bd591d6bdb85c5e81c"
+    },
+    {
+      "path": "priors/long_lrm_1k/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 558634428,
+      "sha256": "36b36926a653c2c3bc563897e073db5f7ee7166c5d8d0ab30f5a14d29b2986d0"
+    },
+    {
+      "path": "observations/long_lrm_1k/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 221872710,
+      "sha256": "46fac53f95f8613fa552e72455e3ea665de798c36753c4d9b48e072a00dee10d"
+    },
+    {
+      "path": "maps/priors/long_lrm_1k/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 176229062,
+      "sha256": "6f05337af527d1c8d8364dff393c68f4bd55404d76644135321f6d8895b7b188"
+    },
+    {
+      "path": "priors/matcha/ShopFacade.ply",
+      "kind": "prior",
+      "bytes": 293381741,
+      "sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb"
+    },
+    {
+      "path": "observations/matcha/ShopFacade.pt",
+      "kind": "observations",
+      "bytes": 502817911
+    },
+    {
+      "path": "maps/priors/matcha/full/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 29289158,
+      "sha256": "00bad9c802e5302e418d842d9201c6daaef589be8f7d21c8affd47ded4d2897f"
+    },
+    {
+      "path": "maps/priors/matcha/compact/ShopFacade.pt",
+      "kind": "deployment_map",
+      "bytes": 12941126,
+      "sha256": "247552e7638942f86612ed7621630b08ded5924ec400cbe09e0563548a696692"
+    },
+    {
+      "path": "priors/matcha/OldHospital.ply",
+      "kind": "prior",
+      "bytes": 199492736,
+      "sha256": "f2dbd089a23bf8f7d0d61e32f34a684d59147519f85db1d7b935e3d8936394d0"
+    },
+    {
+      "path": "observations/matcha/OldHospital.pt",
+      "kind": "observations",
+      "bytes": 1948145943
+    },
+    {
+      "path": "maps/priors/matcha/full/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 75769030,
+      "sha256": "af378214a65f76dc8e82939c56f7a652d0561bc357fc45e3ec8db8050b7932d9"
+    },
+    {
+      "path": "maps/priors/matcha/compact/OldHospital.pt",
+      "kind": "deployment_map",
+      "bytes": 17168326,
+      "sha256": "e9f7fef148381c79b540d639f57bbb6a58bd66bfe8dd0b41207c6c8a84ad43ce"
+    },
+    {
+      "path": "priors/matcha/KingsCollege.ply",
+      "kind": "prior",
+      "bytes": 185302672,
+      "sha256": "8609462a9734eaef059d0785dcaa23ec6957ed12624d6511f030b3a80442d244"
+    },
+    {
+      "path": "observations/matcha/KingsCollege.pt",
+      "kind": "observations",
+      "bytes": 2655583663
+    },
+    {
+      "path": "maps/priors/matcha/full/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 89699142,
+      "sha256": "d9db5b6a2ef25bcbc0284adb3d96668867cdd4a7b0d8e6b6fffba8e3775f9626"
+    },
+    {
+      "path": "maps/priors/matcha/compact/KingsCollege.pt",
+      "kind": "deployment_map",
+      "bytes": 12205126,
+      "sha256": "ba87ab51328a897d2ea0d591ced1042000f7ce1a1977f0a06cca228ac9669a8b"
+    },
+    {
+      "path": "priors/matcha/GreatCourt.ply",
+      "kind": "prior",
+      "bytes": 170860800,
+      "sha256": "91b2b6b47a2d8c5b8618fae541a5d2b5bde6b90ace381a31e44a56e1cb0362d2"
+    },
+    {
+      "path": "observations/matcha/GreatCourt.pt",
+      "kind": "observations",
+      "bytes": 3332554784
+    },
+    {
+      "path": "maps/priors/matcha/full/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 190742662,
+      "sha256": "d8bdc52e2e57f202ea08e51dbe983998d3f98c3549e93b76b30f5b53eb764df2"
+    },
+    {
+      "path": "maps/priors/matcha/compact/GreatCourt.pt",
+      "kind": "deployment_map",
+      "bytes": 51998214,
+      "sha256": "15e0a95f1046a65f765e5026fcd74ddf550e44623df9c5b2316ad11e81ad3076"
+    },
+    {
+      "path": "priors/matcha/StMarysChurch.ply",
+      "kind": "prior",
+      "bytes": 112017926,
+      "sha256": "5cb5d5c58b9c427e716809146e03707663c5c227fdec29531e17ca327bab96ee"
+    },
+    {
+      "path": "observations/matcha/StMarysChurch.pt",
+      "kind": "observations",
+      "bytes": 3236773676
+    },
+    {
+      "path": "maps/priors/matcha/full/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 170609158,
+      "sha256": "0f556a7be22527617e65825e8efd10566ce3e59a342b03c2b7114a677f61ac2b"
+    },
+    {
+      "path": "maps/priors/matcha/compact/StMarysChurch.pt",
+      "kind": "deployment_map",
+      "bytes": 101970310,
+      "sha256": "97194a41c4b62240e3160407717ed1d6e5c04d44103f7fda5ed4fb3004074345"
+    },
+    {
+      "path": "native/STDLoc/on/ShopFacade/cfg_args",
+      "kind": "native_model",
+      "bytes": 502,
+      "sha256": "f2798d2e08a5e3f4bfbea9ce445b0c7dd48d21322708677b4127e43c160da15e"
+    },
+    {
+      "path": "native/STDLoc/on/ShopFacade/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 525405637,
+      "sha256": "ba3537aced15a599811264371581763eaf718ee9855b6b6dd2b6703f40af89c9"
+    },
+    {
+      "path": "native/STDLoc/on/ShopFacade/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "c06c4f7432edd0a9f2ff3143dcf9e903540d1650642f557703d3457935ef9550"
+    },
+    {
+      "path": "native/STDLoc/on/ShopFacade/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "563d138e3b34de56609dbf739f5374f98c21cb9532aca5ecf74078eb322ba175"
+    },
+    {
+      "path": "third_party/STDLoc",
+      "kind": "external_source"
+    },
+    {
+      "path": "native/STDLoc/off/ShopFacade/cfg_args",
+      "kind": "native_model",
+      "bytes": 503,
+      "sha256": "f4c80533dd55e18566167b7e3857a7a432616147b6e85b8f2c80700c4006440e"
+    },
+    {
+      "path": "native/STDLoc/off/ShopFacade/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 490243741,
+      "sha256": "99635a55e2d483b0a108a7041ba16c4007b6a5c2d63fa3f85a6ae3176b0880c1"
+    },
+    {
+      "path": "native/STDLoc/off/ShopFacade/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "e9278188fded41abe1fade3a0770a9f24a9d17b114fb8760cc021fb3e800a124"
+    },
+    {
+      "path": "native/STDLoc/off/ShopFacade/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "e92d063c440b9b5f242a120209015c61222a9acef90daeac60e2446934d85119"
+    },
+    {
+      "path": "native/STDLoc/on/OldHospital/cfg_args",
+      "kind": "native_model",
+      "bytes": 504,
+      "sha256": "42d889119acd4fa1d60f6a48b0cfd817c52df06a425612310b9ca1daf863a86d"
+    },
+    {
+      "path": "native/STDLoc/on/OldHospital/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 515686285,
+      "sha256": "fa45a60e1fdad7bb6d7c499092a766d3e3817bdbce68a9d7e743fa54ed621081"
+    },
+    {
+      "path": "native/STDLoc/on/OldHospital/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "ca22e610e224f9d3aaa50f6898e099036086506439edc71b54369dffe0aa7aff"
+    },
+    {
+      "path": "native/STDLoc/on/OldHospital/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "9c89f350e79b6d81354c60911d7a62dbe0f1b43d9a7a3af470a2daa53b5f8feb"
+    },
+    {
+      "path": "native/STDLoc/off/OldHospital/cfg_args",
+      "kind": "native_model",
+      "bytes": 505,
+      "sha256": "504a87274760d14652e78d96148eb045254d7bbc116af00675cd55f066e75fcb"
+    },
+    {
+      "path": "native/STDLoc/off/OldHospital/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 525749077,
+      "sha256": "4e0d630b0c7db21bd3baaf93fa598d792d37a5805851341756044a60caa02ac9"
+    },
+    {
+      "path": "native/STDLoc/off/OldHospital/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "0e64b24ab0f24afc30cc916d7c4a0f7d53e83bfc44582acdc1599642a07bbf2c"
+    },
+    {
+      "path": "native/STDLoc/off/OldHospital/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "003e7a25baf8f5928b6eb265c5d47a49a4aa13c36913fbd426896d7af7598b3c"
+    },
+    {
+      "path": "native/STDLoc/on/KingsCollege/cfg_args",
+      "kind": "native_model",
+      "bytes": 506,
+      "sha256": "814df2708a5bbf0ee49124942c05b07fb3ca7319c1aafde44da73c59eddb8fb9"
+    },
+    {
+      "path": "native/STDLoc/on/KingsCollege/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 424397389,
+      "sha256": "2073267869837cd1eb410a0f6b6880555b247220e485d6f0249b296f5f660964"
+    },
+    {
+      "path": "native/STDLoc/on/KingsCollege/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "1cd450a4431cba110fa8e57dd7aeae278617efcf0959474314a4696f6ba64028"
+    },
+    {
+      "path": "native/STDLoc/on/KingsCollege/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "5e0a5047650c73232aa0a9e5712be2a86b25c12aed05ea4ff5b1706d1963c081"
+    },
+    {
+      "path": "native/STDLoc/off/KingsCollege/cfg_args",
+      "kind": "native_model",
+      "bytes": 507,
+      "sha256": "62ac7ffc4b27251493fa77ec23bb58375b834a442af81b304ee49b99ddc43693"
+    },
+    {
+      "path": "native/STDLoc/off/KingsCollege/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 420178165,
+      "sha256": "71ac150ada06aa9c7520f886517c2fe53c20688668712b8bb27fc31159a3d134"
+    },
+    {
+      "path": "native/STDLoc/off/KingsCollege/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "5366d53c4241dda345dc4f8eb888c98d073a10b137701e6ec105186977fad353"
+    },
+    {
+      "path": "native/STDLoc/off/KingsCollege/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "b1b735d05564f58225e3e652efbf345df3db58ec5ed9733f69528bba146326a7"
+    },
+    {
+      "path": "native/STDLoc/on/GreatCourt/cfg_args",
+      "kind": "native_model",
+      "bytes": 502,
+      "sha256": "5a223e0e89f21c2c2de50ffd838953f6728cefc0844b97e80e9ceda471043bf5"
+    },
+    {
+      "path": "native/STDLoc/on/GreatCourt/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 414647509,
+      "sha256": "a3028fff5e1221538a08b71b598766165cb349e2616dbde38e03b5d8d5f7235a"
+    },
+    {
+      "path": "native/STDLoc/on/GreatCourt/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131474,
+      "sha256": "5b5654ed36c99b046938305bcd1c5a3516c84043199ee5568386a102488368d7"
+    },
+    {
+      "path": "native/STDLoc/on/GreatCourt/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "cecc0592d11800f014fd45f222b1e704decf97a95dc64fde0e3fbfc569072630"
+    },
+    {
+      "path": "native/STDLoc/off/GreatCourt/cfg_args",
+      "kind": "native_model",
+      "bytes": 503,
+      "sha256": "bf8ebc1332467b5ab28f7684cb13f156b19fff37ce109014654c89d257463602"
+    },
+    {
+      "path": "native/STDLoc/off/GreatCourt/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 415789765,
+      "sha256": "7a85388df2aa20ce6aa2cae4dc8b6c574451a4f276b9b59993ea9025b417f09c"
+    },
+    {
+      "path": "native/STDLoc/off/GreatCourt/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "fd44efea5e9e0f628f60d9e9a0b2c3f2047adb649f9d7e1acccd4a37789ea0aa"
+    },
+    {
+      "path": "native/STDLoc/off/GreatCourt/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "2dc0721b61acb1ab082c8f15f2db18dba9253bc0c75581cedaee4464d47d960c"
+    },
+    {
+      "path": "native/STDLoc/on/StMarysChurch/cfg_args",
+      "kind": "native_model",
+      "bytes": 523,
+      "sha256": "ed890c9098bffb96d1a63c2566319a6b584c5e6e24d4d0d9ec1a58d7da8528c6"
+    },
+    {
+      "path": "native/STDLoc/on/StMarysChurch/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 362748637,
+      "sha256": "bee2f18c7dd31a77f21cf96e023813a48c0836575136ff6d2a9d0e4ab166b3ca"
+    },
+    {
+      "path": "native/STDLoc/on/StMarysChurch/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "292772fa0d0f47bfe4777c9a4e6a7122307c860d554bb82538f3dc156e575715"
+    },
+    {
+      "path": "native/STDLoc/on/StMarysChurch/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "c784574c7532c304e03167ef56c7649dee79d26a98ab47e1ffd5f218504b8f50"
+    },
+    {
+      "path": "native/STDLoc/off/StMarysChurch/cfg_args",
+      "kind": "native_model",
+      "bytes": 524,
+      "sha256": "6139944015251188ad598e60bee039e3960a95ff432fb3a482f4b6ef6bce0ba1"
+    },
+    {
+      "path": "native/STDLoc/off/StMarysChurch/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 367962565,
+      "sha256": "97c2a8c294601dcd0ed21819a54e2c57fa3f14e2ae35d91486596ca54e23c886"
+    },
+    {
+      "path": "native/STDLoc/off/StMarysChurch/detector/sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 131484,
+      "sha256": "3407b84675245e4dc12e821ba6c775ca2df278d7618a38dcd6cf7ddec10510f8"
+    },
+    {
+      "path": "native/STDLoc/off/StMarysChurch/detector/30000_detector.pth",
+      "kind": "native_model",
+      "bytes": 1553812,
+      "sha256": "5e88e34a58969e11a22bdf26b4490a0a34404b215b4df447a9e558329bbdf70a"
+    },
+    {
+      "path": "native/ULFLoc/on/ShopFacade/cfg_args",
+      "kind": "native_model",
+      "bytes": 502,
+      "sha256": "de110a8fb0cd333866f4eff93076e9997022054c5ec0250c0eca5331821f4b44"
+    },
+    {
+      "path": "native/ULFLoc/on/ShopFacade/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 84697499,
+      "sha256": "4ee6afd736e314fea932ce394fdf3309efe9401847c30bb70fee0b5d94a10832"
+    },
+    {
+      "path": "native/ULFLoc/on/ShopFacade/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "c023c08440bcb51f11470ef6fb40d306a5fca809c91c1306fdb5c2976bc6c98e"
+    },
+    {
+      "path": "native/ULFLoc/on/ShopFacade/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "9d8503ee0ad0b6220ec5508adc2e40e67792ad30c5cb69efd08a5e87a6c733ed"
+    },
+    {
+      "path": "third_party/ULFLoc",
+      "kind": "external_source"
+    },
+    {
+      "path": "native/ULFLoc/off/ShopFacade/cfg_args",
+      "kind": "native_model",
+      "bytes": 503,
+      "sha256": "c956308a4879554b63b1826c8b0d3593b8d0437c92da458bec374b90fa2ba34b"
+    },
+    {
+      "path": "native/ULFLoc/off/ShopFacade/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 89096523,
+      "sha256": "d921c476a181f0721e7e5052c6bc042fdc6e954df2c49509f651fbc48dd38988"
+    },
+    {
+      "path": "native/ULFLoc/off/ShopFacade/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "5f620ba7047cd6e2ec2665ae5d47bb5979c0d512045924615e17a927ec06614d"
+    },
+    {
+      "path": "native/ULFLoc/off/ShopFacade/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "143a683b7362776d278e43635d184639603e1a45fd512a0770f8e21565d3ed75"
+    },
+    {
+      "path": "native/ULFLoc/on/OldHospital/cfg_args",
+      "kind": "native_model",
+      "bytes": 504,
+      "sha256": "f57f972d33a0903641c1c62a200fba9122842d26cfa39d855a4905e0ff06439c"
+    },
+    {
+      "path": "native/ULFLoc/on/OldHospital/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 102765043,
+      "sha256": "e508eba7f513467694360920348db19f271ae7e0d80bcb0d822cb90eb91fc0ea"
+    },
+    {
+      "path": "native/ULFLoc/on/OldHospital/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "38e3be02cca760fa9e43c830933b8e5b7f33655f417e20410d08796e57499465"
+    },
+    {
+      "path": "native/ULFLoc/on/OldHospital/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "29f14e802428c355d7a97ef4548265fd96082bff2012485f9a4050863fc058fb"
+    },
+    {
+      "path": "native/ULFLoc/off/OldHospital/cfg_args",
+      "kind": "native_model",
+      "bytes": 505,
+      "sha256": "201b97e0122ce024acdd1ec5fc208f05a8e1245a44c2897a80cacc032cbf2faa"
+    },
+    {
+      "path": "native/ULFLoc/off/OldHospital/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 105585547,
+      "sha256": "0be9779c8f7799219554fd7c7a77d5bb85d30e04ac6285ca526ae8d110cb6fa8"
+    },
+    {
+      "path": "native/ULFLoc/off/OldHospital/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "ae2523898611417532e416efb1c656314731deae6641d0cf51d44ff16fa6f61b"
+    },
+    {
+      "path": "native/ULFLoc/off/OldHospital/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "323ebea9f1ba025accd60c349b496ca67e487653eaf85ef8dfdcf60b251ec953"
+    },
+    {
+      "path": "native/ULFLoc/on/KingsCollege/cfg_args",
+      "kind": "native_model",
+      "bytes": 506,
+      "sha256": "df3eba9913d1163d804a2a908dcfdf81bef851fe8d014eb19c927f672dd5ba92"
+    },
+    {
+      "path": "native/ULFLoc/on/KingsCollege/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 82175339,
+      "sha256": "362ed114cff86c0ecd20c3c8a919980c6da6f774ceaa4d23c52b32313215d11a"
+    },
+    {
+      "path": "native/ULFLoc/on/KingsCollege/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "fe1eee5b1e5614fb5cb92785a6f5201a7791753e17c5f44b6df9a1ba03ef30bb"
+    },
+    {
+      "path": "native/ULFLoc/on/KingsCollege/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "0f1a2754fe9f1722065159231d29e98e21ca33597ff19cbcd486c5abb98078d5"
+    },
+    {
+      "path": "native/ULFLoc/off/KingsCollege/cfg_args",
+      "kind": "native_model",
+      "bytes": 507,
+      "sha256": "939e999d4acf094ce19cb8311af064a2d1599700160bc7a789817a69e3ca8aac"
+    },
+    {
+      "path": "native/ULFLoc/off/KingsCollege/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 82429539,
+      "sha256": "2c8316ebf21a189af16cb06699fa51c922cb4f9aaeb62f21825629fbd630143d"
+    },
+    {
+      "path": "native/ULFLoc/off/KingsCollege/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "701d54c1f5985910d6b98709361b304160d81a2c0d169e02f1d75f53bb1e9408"
+    },
+    {
+      "path": "native/ULFLoc/off/KingsCollege/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "3d0f7a897e4a7089aeeafa0b1bbe4a95a0592d8d851a789a2c535420e8d4dd90"
+    },
+    {
+      "path": "native/ULFLoc/on/GreatCourt/cfg_args",
+      "kind": "native_model",
+      "bytes": 502,
+      "sha256": "78151bb8ac0eed434217e08732344335e81eea161f2cbf2b86386f922a31cb8c"
+    },
+    {
+      "path": "native/ULFLoc/on/GreatCourt/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 81093067,
+      "sha256": "5066e0b45d9ecabd320262217434c879df0d400db4d07138574c071b54c36c8c"
+    },
+    {
+      "path": "native/ULFLoc/on/GreatCourt/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "aaba7c031f6f0741da0e2a794ada2428909980501462988c753453ca42c54248"
+    },
+    {
+      "path": "native/ULFLoc/on/GreatCourt/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "a036a26692cb12b4a06b3c1cda7bfbf5ed562cb278c03570b7143f7bb2e68d98"
+    },
+    {
+      "path": "native/ULFLoc/off/GreatCourt/cfg_args",
+      "kind": "native_model",
+      "bytes": 503,
+      "sha256": "1ad9869d1bbb8df19b7f022c413eb008dc3093e94c86349419f407c95313a058"
+    },
+    {
+      "path": "native/ULFLoc/off/GreatCourt/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 80290539,
+      "sha256": "9bc56608bddfdaca5a3b4be9089ec2097f0c4c84f5501413411c7d08fdf47ef6"
+    },
+    {
+      "path": "native/ULFLoc/off/GreatCourt/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "ec310714097f77e21d06281e9043f685a2715299f8d7691decf3a13072551f5b"
+    },
+    {
+      "path": "native/ULFLoc/off/GreatCourt/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "8baf1d6f70afd0d5086a988755a38d13ad676375f72479e409e3c00e6845f26b"
+    },
+    {
+      "path": "native/ULFLoc/on/StMarysChurch/cfg_args",
+      "kind": "native_model",
+      "bytes": 523,
+      "sha256": "f4e3c101a664ceabad4f56e188e146786c1fb9ed2156e1d69049ab5b215b4e5e"
+    },
+    {
+      "path": "native/ULFLoc/on/StMarysChurch/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 65714835,
+      "sha256": "83076872651e1cb5ae6a496e274ea1e9b7281c7ddf316b779e8251a328c96c74"
+    },
+    {
+      "path": "native/ULFLoc/on/StMarysChurch/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "e732f3cd1868e30c35bc7b2d771e5f8d2d96fd0c12e37c0d2b6689786a7ff2c9"
+    },
+    {
+      "path": "native/ULFLoc/on/StMarysChurch/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "4fa7e79e90bc49e0d34c4d3e025decacd961e3d3b5a3a3774c65d3d3f0384deb"
+    },
+    {
+      "path": "native/ULFLoc/off/StMarysChurch/cfg_args",
+      "kind": "native_model",
+      "bytes": 524,
+      "sha256": "299f36ab7e0bd8b71bfb99b16c1777616c260e9e8c6dbff00902ca868444c7a1"
+    },
+    {
+      "path": "native/ULFLoc/off/StMarysChurch/point_cloud/iteration_30000/point_cloud.ply",
+      "kind": "native_model",
+      "bytes": 66449659,
+      "sha256": "8e89092937d7b5ee6dba8501eb631ae4ca66b7cdc632200598a9b966f84e5635"
+    },
+    {
+      "path": "native/ULFLoc/off/StMarysChurch/test/keypoints_sampled_idx.pkl",
+      "kind": "native_model",
+      "bytes": 160412,
+      "sha256": "a7b3a89abd7fac08da24020e8f27175ea3b68c48f4d71bc0aa0512b124735918"
+    },
+    {
+      "path": "native/ULFLoc/off/StMarysChurch/test/keypoints_features.pkl",
+      "kind": "native_model",
+      "bytes": 20480421,
+      "sha256": "524794ad8c86b4deb96ebf0e417f252aaaaccad246c199791eb9db7139ea088f"
+    },
+    {
+      "path": "figure_inputs/e1",
+      "kind": "figure_inputs"
+    },
+    {
+      "path": "figure_inputs/e3",
+      "kind": "figure_inputs"
+    },
+    {
+      "path": "figure_inputs/e4",
+      "kind": "figure_inputs"
+    },
+    {
+      "path": "weights/superpoint_v1.pth",
+      "kind": "shared_weights",
+      "bytes": 5206086,
+      "sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e"
+    }
+  ]
+}

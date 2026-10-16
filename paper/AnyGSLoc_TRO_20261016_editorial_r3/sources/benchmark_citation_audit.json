@@ -1,0 +1,170 @@
+[
+  {
+    "key": "reported260504730v1bibbib55",
+    "method": "AS (SIFT)",
+    "reference_text": "[47] T. Sattler, B. Leibe, and L. Kobbelt (2012) Improving image-based localization by active correspondence search . In European conference on computer vision , pp. 752–765 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib55",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib20",
+    "method": "PixLoc",
+    "reference_text": "[45] P. Sarlin, A. Unagar, M. Larsson, H. Germain, C. Toft, V. Larsson, M. Pollefeys, V. Lepetit, L. Hammarstrand, F. Kahl, et al. (2021) Back to the feature: learning robust camera localization from pixels to pose . In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 3247–3257 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib20",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib26",
+    "method": "DFNet",
+    "reference_text": "[11] S. Chen, X. Li, Z. Wang, and V. A. Prisacariu (2022) Dfnet: enhance absolute pose regression with direct feature matching . In European Conference on Computer Vision , pp. 1–17 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib26",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib29",
+    "method": "LENS",
+    "reference_text": "[35] A. Moreau, N. Piasco, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2022) Lens: localization enhanced by nerf synthesis . In Conference on Robot Learning , pp. 1347–1356 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib29",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib28",
+    "method": "PMNet",
+    "reference_text": "[27] J. Lin, J. Gu, B. Wu, L. Fan, R. Chen, L. Liu, and J. Ye (2024) Learning neural volumetric pose features for camera localization . In European Conference on Computer Vision , pp. 198–214 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib28",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib7",
+    "method": "NeuMap",
+    "reference_text": "[56] S. Tang, S. Tang, A. Tagliasacchi, P. Tan, and Y. Furukawa (2023) Neumap: neural coordinate mapping by auto-transdecoder for camera localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 929–939 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib7",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib37",
+    "method": "GLACE",
+    "reference_text": "[60] F. Wang, X. Jiang, S. Galliani, C. Vogel, and M. Pollefeys (2024) Glace: global local accelerated coordinate encoding . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21562–21571 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib37",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib42",
+    "method": "CROSSFIRE",
+    "reference_text": "[34] A. Moreau, N. Piasco, M. Bennehar, D. Tsishkou, B. Stanciulescu, and A. de La Fortelle (2023) Crossfire: camera relocalization on self-supervised features from an implicit representation . In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 252–262 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib42",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib27",
+    "method": "DFNet+NeFeS50",
+    "reference_text": "[9] S. Chen, Y. Bhalgat, X. Li, J. Bian, K. Li, Z. Wang, and V. A. Prisacariu (2024) Neural refinement for absolute pose regression with feature synthesis . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20987–20996 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib27",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib58",
+    "method": "HR-APR",
+    "reference_text": "[29] C. Liu, S. Chen, Y. Zhao, H. Huang, V. Prisacariu, and T. Braud (2024) Hr-apr: apr-agnostic framework with uncertainty estimation and hierarchical refinement for camera relocalisation . In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 8544–8550 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib58",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib57",
+    "method": "MCLoc",
+    "reference_text": "[58] G. Trivigno, C. Masone, B. Caputo, and T. Sattler (2024) The unreasonable effectiveness of pre-trained features for camera pose refinement . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 12786–12798 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib57",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib47",
+    "method": "GSplatLoc",
+    "reference_text": "[53] G. Sidorov, M. Mohrat, D. Gridusov, R. Rakhimov, and S. Kolyubin (2024) GSplatLoc: grounding keypoint descriptors into 3d gaussian splatting for improved visual localization . arXiv preprint arXiv:2409.16502 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib47",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib52",
+    "method": "GSFFs-PR Feature",
+    "reference_text": "[38] M. Pietrantoni, G. Csurka, and T. Sattler (2025) Gaussian splatting feature fields for (privacy-preserving) visual localization . In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 1082–1092 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib52",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib61",
+    "method": "ACE+GS-CPR",
+    "reference_text": "[28] C. Liu, S. Chen, Y. S. Bhalgat, S. HU, M. Cheng, Z. Wang, V. A. Prisacariu, and T. Braud (2025) GS-CPR: efficient camera pose refinement via 3d gaussian splatting . In The Thirteenth International Conference on Learning Representations , External Links: Link",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib61",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S4.T4",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported250319358v1bibbib68",
+    "method": "PNeRFLoc",
+    "reference_text": "[68] Boming Zhao, Luwei Yang, Mao Mao, Hujun Bao, and Zhaopeng Cui. PNeRFLoc: Visual localization with point-based neural radiance fields. In AAAI , pages 7450–7459, 2024.",
+    "metadata_source": "https://arxiv.org/html/2503.19358v1#bib.bib68",
+    "numerical_source": "https://arxiv.org/html/2503.19358v1#S4.T2",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib56",
+    "method": "DVLAD+R2D2",
+    "reference_text": "[57] A. Torii, R. Arandjelovic, J. Sivic, M. Okutomi, and T. Pajdla (2015) 24/7 place recognition by view synthesis . In Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 1808–1817 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib56",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S3.T1",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib24",
+    "method": "Marepo",
+    "reference_text": "[10] S. Chen, T. Cavallari, V. A. Prisacariu, and E. Brachmann (2024) Map-relative pose regression for visual re-localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 20665–20674 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib24",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S3.T1",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported250319358v1bibbib15",
+    "method": "NBE+SLD",
+    "reference_text": "[15] Tien Do, Ondrej Miksik, Joseph DeGol, Hyun Soo Park, and Sudipta N Sinha. Learning to detect scene landmarks for camera localization. In CVPR , pages 11132–11142, 2022.",
+    "metadata_source": "https://arxiv.org/html/2503.19358v1#bib.bib15",
+    "numerical_source": "https://arxiv.org/html/2503.19358v1#S4.T1",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib38",
+    "method": "SCRNet",
+    "reference_text": "[26] X. Li, S. Wang, Y. Zhao, J. Verbeek, and J. Kannala (2020) Hierarchical scene coordinate classification and regression for visual localization . In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 11983–11992 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib38",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S3.T1a",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib62",
+    "method": "SCRNet-ID",
+    "reference_text": "[36] T. Ng, A. Lopez-Rodriguez, V. Balntas, and K. Mikolajczyk (2021) Reassessing the limitations of cnn methods for camera pose regression . In International Conference on 3D Vision ,",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib62",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S3.T1a",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  },
+  {
+    "key": "reported260504730v1bibbib8",
+    "method": "NeRF-SCR",
+    "reference_text": "[8] L. Chen, W. Chen, R. Wang, and M. Pollefeys (2024) Leveraging neural radiance fields for uncertainty-aware visual localization . In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 6298–6305 .",
+    "metadata_source": "https://arxiv.org/html/2605.04730v1#bib.bib8",
+    "numerical_source": "https://arxiv.org/html/2605.04730v1#S3.T1a",
+    "verification": "Metadata transcribed from the existing source-paper reference catalog; not a new full-text verification."
+  }
+]

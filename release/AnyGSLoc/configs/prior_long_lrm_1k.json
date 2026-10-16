@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "frontend": "unmasked_sp_then_v2",
+  "input_modes": [
+    "pure_gs"
+  ],
+  "scenes": {
+    "ShopFacade": {
+      "dataset": "datasets/Cambridge/ShopFacade",
+      "prior": "priors/long_lrm_1k/ShopFacade.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "explicit_valid_mask",
+      "rectification_contract": "opencv_same_k",
+      "test_count": 103,
+      "mapping_count": 231,
+      "observation_cache": "observations/long_lrm_1k/ShopFacade.pt",
+      "full_map": "maps/priors/long_lrm_1k/full/ShopFacade.pt",
+      "compact_map": "maps/priors/long_lrm_1k/compact/ShopFacade.pt"
+    },
+    "OldHospital": {
+      "dataset": "datasets/Cambridge/OldHospital",
+      "prior": "priors/long_lrm_1k/OldHospital.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "explicit_valid_mask",
+      "rectification_contract": "opencv_same_k",
+      "test_count": 182,
+      "mapping_count": 895,
+      "observation_cache": "observations/long_lrm_1k/OldHospital.pt",
+      "full_map": "maps/priors/long_lrm_1k/full/OldHospital.pt",
+      "compact_map": "maps/priors/long_lrm_1k/compact/OldHospital.pt"
+    },
+    "KingsCollege": {
+      "dataset": "datasets/Cambridge/KingsCollege",
+      "prior": "priors/long_lrm_1k/KingsCollege.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "explicit_valid_mask",
+      "rectification_contract": "opencv_same_k",
+      "test_count": 343,
+      "mapping_count": 1220,
+      "observation_cache": "observations/long_lrm_1k/KingsCollege.pt",
+      "full_map": "maps/priors/long_lrm_1k/full/KingsCollege.pt",
+      "compact_map": "maps/priors/long_lrm_1k/compact/KingsCollege.pt"
+    },
+    "GreatCourt": {
+      "dataset": "datasets/Cambridge/GreatCourt",
+      "prior": "priors/long_lrm_1k/GreatCourt.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "explicit_valid_mask",
+      "rectification_contract": "opencv_same_k",
+      "test_count": 760,
+      "mapping_count": 1531,
+      "observation_cache": "observations/long_lrm_1k/GreatCourt.pt",
+      "full_map": "maps/priors/long_lrm_1k/full/GreatCourt.pt",
+      "compact_map": "maps/priors/long_lrm_1k/compact/GreatCourt.pt"
+    },
+    "StMarysChurch": {
+      "dataset": "datasets/Cambridge/StMarysChurch",
+      "prior": "priors/long_lrm_1k/StMarysChurch.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "explicit_valid_mask",
+      "rectification_contract": "opencv_same_k",
+      "test_count": 530,
+      "mapping_count": 1487,
+      "observation_cache": "observations/long_lrm_1k/StMarysChurch.pt",
+      "full_map": "maps/priors/long_lrm_1k/full/StMarysChurch.pt",
+      "compact_map": "maps/priors/long_lrm_1k/compact/StMarysChurch.pt"
+    }
+  }
+}

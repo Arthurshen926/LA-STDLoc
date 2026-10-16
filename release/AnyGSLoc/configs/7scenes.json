@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "frontend": "alpha_gated",
+  "input_modes": [
+    "pure_gs"
+  ],
+  "scenes": {
+    "chess": {
+      "dataset": "datasets/7Scenes/chess",
+      "prior": "priors/indoor/7Scenes/chess.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 2000,
+      "full_map": "maps/7Scenes/full/chess.pt",
+      "compact_map": "maps/7Scenes/compact/chess.pt"
+    },
+    "fire": {
+      "dataset": "datasets/7Scenes/fire",
+      "prior": "priors/indoor/7Scenes/fire.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 2000,
+      "full_map": "maps/7Scenes/full/fire.pt",
+      "compact_map": "maps/7Scenes/compact/fire.pt"
+    },
+    "heads": {
+      "dataset": "datasets/7Scenes/heads",
+      "prior": "priors/indoor/7Scenes/heads.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 1000,
+      "full_map": "maps/7Scenes/full/heads.pt",
+      "compact_map": "maps/7Scenes/compact/heads.pt"
+    },
+    "office": {
+      "dataset": "datasets/7Scenes/office",
+      "prior": "priors/indoor/7Scenes/office.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 4000,
+      "full_map": "maps/7Scenes/full/office.pt",
+      "compact_map": "maps/7Scenes/compact/office.pt"
+    },
+    "pumpkin": {
+      "dataset": "datasets/7Scenes/pumpkin",
+      "prior": "priors/indoor/7Scenes/pumpkin.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 2000,
+      "full_map": "maps/7Scenes/full/pumpkin.pt",
+      "compact_map": "maps/7Scenes/compact/pumpkin.pt"
+    },
+    "redkitchen": {
+      "dataset": "datasets/7Scenes/redkitchen",
+      "prior": "priors/indoor/7Scenes/redkitchen.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 5000,
+      "full_map": "maps/7Scenes/full/redkitchen.pt",
+      "compact_map": "maps/7Scenes/compact/redkitchen.pt"
+    },
+    "stairs": {
+      "dataset": "datasets/7Scenes/stairs",
+      "prior": "priors/indoor/7Scenes/stairs.ply",
+      "gaussian_type": "2dgs",
+      "sh_degree": 3,
+      "white_background": false,
+      "images": "processed",
+      "query_mask": "none",
+      "test_count": 1000,
+      "full_map": "maps/7Scenes/full/stairs.pt",
+      "compact_map": "maps/7Scenes/compact/stairs.pt"
+    }
+  }
+}

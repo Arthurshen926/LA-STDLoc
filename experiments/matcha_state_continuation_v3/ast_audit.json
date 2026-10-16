@@ -1,0 +1,27 @@
+{
+  "added_top_level": [
+    "finite_state",
+    "finite_terminal_model"
+  ],
+  "changed_top_level": [
+    "Controller",
+    "scalar_record"
+  ],
+  "copied_unchanged": {
+    "build_observer.py": "685eb18bce0a56f32e317331e923bff0c4db4d7a8341cf1120d75aa8110c30cc",
+    "build_trainer.py": "1a9f1aa29b607b8be74c5ab4537b7dbea1c8b23407e573dab2be6c448c296a4f",
+    "continuation_gate.py": "c293fcddb5932c1c1bf504fa08ba337d924b9cfc44394e9c7b10f24eb436af81",
+    "diagnostic_cpu.py": "194101966fd02c42f0af17f64b754f74a59dd573c4acde998ccd01c8a69a236b",
+    "freeze_binding.py": "ae8d503b43f8bdd41ba875115240b2e4e983a746b2b9e30eea555cd314ba3d2f",
+    "native_n8_launcher.py": "1ac62f1cb9f89459774c57b24cc22235bc19c07a6ee1c5cd2e0248ff12ad6174",
+    "project_a_reference.py": "644fc452589babcf90a4bbc579ebd30a062d3c89912766e5ad28c72b589f147c",
+    "train_with_charts_exact.py": "92e6fb0cf01af2a1b729f6ffa523eea43d0adb15f09267d10ba915a493f49f43",
+    "train_with_charts_observer.py": "36a6bd905df2585e3bd0e6a668ddbbf94ac52f2cd0f14ec6e2069170b48d0b0d"
+  },
+  "native_math_trainers_byte_identical_to_v2": true,
+  "old_source_unchanged": "3a95c8747b3a1e3a96494edec4d40e96afa31edbfbc978684f16291655d89c03",
+  "removed_top_level": [
+    "validate_reference"
+  ],
+  "schema": "matcha_v3_ast_audit"
+}

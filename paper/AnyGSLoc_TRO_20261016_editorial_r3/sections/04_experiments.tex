@@ -1,0 +1,90 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate AnyGSLoc from four complementary perspectives. First, we compare the resulting localization map with established methods on standard benchmarks. Second, we isolate the geometric and appearance decisions used to construct a landmark. Third, we examine whether localization-aware selection can reduce the deployed map without sacrificing the useful part of its localization accuracy. Finally, we test the construction pipeline across different Gaussian representations and with optional access to the original mapping images.
+
+\subsection{Experimental Setup}
+\label{sec:setup}
+
+\paragraph{Data and map variants}
+We use Cambridge Landmarks, 7Scenes, and 12Scenes~\cite{kendall2015posenet,shotton2013scenes,valentin2016energy}, comprising five outdoor and nineteen indoor scenes with 24,700 queries. Cambridge uses vanilla 3DGS by default, while the indoor experiments use 2DGS and SfM pseudo-ground-truth poses~\cite{brachmann2021pgt}. All local comparisons and ablations use the same 1,918 Cambridge queries. Unless stated otherwise, AnyGSLoc results use \emph{Compact}, the final selected map. \emph{Full} denotes the complete candidate bank before selection and provides the reference for measuring the effect of map compression. Selection does not modify a retained landmark's coordinate or descriptor.
+
+\paragraph{Metrics and comparisons}
+Translation error (TE) is the camera-center distance and rotation error (RE) is the relative rotation angle. For each scene, we compute the requested statistic over its queries and then average the scene-level values with equal weight. This convention is used for medians, means, percentiles, and recall, so a scene with many queries does not dominate the aggregate. R5 and R15 denote the fractions within $5$\,cm/$5^\circ$ and $15$\,cm/$5^\circ$, respectively. All returned estimates, including severe failures, remain in the statistics. Landmark counts and storage are summed over scenes, with MB denoting $10^6$ bytes. Tables~\ref{tab:t1}--\ref{tab:t3} reproduce published results at their reported precision and scene coverage; they are therefore literature comparisons rather than identical-input reruns.
+
+\paragraph{Localization time and storage}
+All local timing measurements use an RTX~3090 and four CPU threads, with three fresh processes per scene, 50 warm-up queries, and the same 100 measured queries per process. We report a single metric, \emph{localization time}, from fresh query feature extraction through the final pose output. Decoding, initialization, external preprocessing, and segmentation-network inference are outside this boundary. Native solver and diagnostic operations are retained for each baseline. Means are scene-equal. Storage counts scene-specific deployment assets while excluding shared pretrained weights, query inputs, and training intermediates. These definitions are kept fixed across the local comparison and ablation experiments.
+
+\input{sections/04_implementation}
+
+\subsection{Benchmark Localization Accuracy}
+\label{sec:accuracy}
+\input{tables/T1}
+\input{tables/T2}
+\input{tables/T3}
+
+The benchmark results establish that an explicit landmark map derived from Gaussian scenes can support accurate relocalization without retaining the renderer online. AnyGSLoc Compact reaches 8.54\,cm/$0.12^\circ$ average scene-median error on Cambridge, 0.64\,cm/$0.21^\circ$ on 7Scenes, and 0.26\,cm/$0.11^\circ$ on 12Scenes (Tables~\ref{tab:t1}--\ref{tab:t3}). On Cambridge, the method lies between the published five-scene averages of ULF-Loc and SplitGS-Loc, with the relative ranking varying across scenes rather than being uniformly dominated by one method. The Full reference reaches 7.82\,cm/$0.12^\circ$, showing that most of the retained accuracy survives the subsequent map reduction. On the indoor benchmarks, Full gives 0.73\,cm/$0.24^\circ$ on 7Scenes and 0.26\,cm/$0.12^\circ$ on 12Scenes; retaining every candidate is therefore not itself a guarantee of lower localization error.
+
+\subsection{Direct Comparison and Deployment Cost}
+\label{sec:local-comparison}
+\input{tables/T4}
+\input{figures/e1}
+\input{figures/e5}
+
+The local comparison highlights a useful distinction between localization accuracy and the complexity of the deployed pipeline. Compact achieves 8.54\,cm median TE and 44.25\% R5 in a single pose-estimation stage (Table~\ref{tab:t4}). Its median TE is close to the refined outputs of STDLoc and ULF-Loc, which improve from 11.22 to 8.88\,cm and from 12.19 to 8.37\,cm, respectively. The Full reference reaches 7.82\,cm and the highest R5 in this comparison. Figure~\ref{fig:e1} shows representative query alignments.
+
+The corresponding deployment cost is substantially smaller. Compact requires 74.19\,ms of localization time and 126.73\,MB of scene-specific storage, compared with 518.01\,ms and 2,251.31\,MB for refined STDLoc and 1,574.00\,ms and 519.65\,MB for refined ULF-Loc. Full requires 77.22\,ms and 585.69\,MB. The main benefit of selection is therefore the reduction in persistent map size; the measured localization time changes only modestly because feature extraction and robust pose estimation remain common to the compared map variants. Figure~\ref{fig:e5} summarizes these operating points.
+
+Mean errors reveal why median accuracy alone is insufficient for this comparison. Full and Compact have mean TE/RE of 21.12\,cm/$0.236^\circ$ and 19.74\,cm/$0.238^\circ$, respectively. In contrast, STDLoc refinement improves its median and R5 while increasing mean TE/RE from 75.06\,cm/$1.078^\circ$ to 311.15\,cm/$1.384^\circ$. The mean and tail statistics therefore expose occasional large pose failures that are hidden by the median.
+
+\subsection{Landmark Geometry and Appearance}
+\label{sec:construction-results}
+\input{tables/T5}
+\input{figures/e2}
+
+\paragraph{Coordinate sources}
+We first ask where the 3D coordinate of a localization landmark should come from. Table~\ref{tab:t5} holds the landmark identities, eligible observations, Full-map descriptors, and query processing fixed for each Gaussian model while disabling selection. Gaussian-center and rendered-depth alternatives are aggregated from the common observations, whereas the proposed coordinate is obtained by multiview ray triangulation. The resulting common pools contain 421,224 landmarks for vanilla 3DGS and 352,334 for MAtCha; these pools are used only for this controlled coordinate-source study.
+
+The result directly supports the geometric design in Sec.~\ref{sec:geometry}. Triangulation gives the lowest median TE and highest R5 for both evaluated Gaussian models. On vanilla 3DGS, median TE is 7.95\,cm for triangulation, compared with 9.98\,cm for Gaussian centers and 94.83\,cm for rendered depth. On MAtCha, the corresponding values are 8.51, 10.51, and 9.46\,cm. The large variation of rendered-depth performance also shows that depth back-projection is tied to the depth behavior of the underlying scene representation. Figure~\ref{fig:e2} visualizes the reprojection discrepancy using shared 3DGS observations. This experiment isolates coordinate assignment; it does not measure error against an independently reconstructed ground-truth surface.
+
+\input{tables/T6}
+
+\paragraph{Observation filtering and descriptor fusion}
+Table~\ref{tab:t6} evaluates the two appearance-side components together because they act at different points in the construction pipeline. Observation filtering changes which detections enter association, whereas descriptor fusion changes how the observations of an established track are represented. For each condition, the single-descriptor and fused variants use the same selected coordinates and landmark identities; the single descriptor is the first observation in a fixed lexicographic order. Because filtering changes the candidate graph, the selector can produce different natural map sizes.
+
+The two mechanisms show complementary effects. Descriptor fusion increases R5 by 2.82 percentage points without filtering and by 2.66 points with filtering, and lowers both median and P95 TE in the corresponding comparisons. Observation filtering has a smaller effect on the median but reduces the error tail of the fused map: P95 TE falls from 50.04 to 45.69\,cm, while mean TE/RE falls from 21.24\,cm/$0.283^\circ$ to 19.74\,cm/$0.238^\circ$. The experiment therefore supports the intended division of labor: fusion strengthens the representation available to matching, while filtering removes unreliable observations before they can influence track construction.
+
+\subsection{Map Compression and Localization Accuracy}
+\label{sec:selection-results}
+\input{tables/T7}
+\input{figures/e3}
+
+Selection is evaluated next at the level of the deployed map. Compact retains 121,379 of the Full map's 560,996 landmarks, removing 78.36\% of the points (Fig.~\ref{fig:e3}). Storage decreases from 585.69 to 126.73\,MB, while average scene-median TE changes from 7.82 to 8.54\,cm and R15 from 74.54\% to 73.12\%. The important observation is that the reduction is not obtained by uniformly discarding useful structure: the selected map preserves most of the localization performance while removing a large fraction of the stored representation.
+
+Table~\ref{tab:t7}(a) shows how the selection stages contribute to this behavior. Quality pruning alone gives 9.00\,cm median TE. Coverage completion reduces it to 8.93\,cm, and the final pose-aware stage reaches 8.54\,cm. More importantly, P95 TE decreases from 57.90 to 55.83 and then to 45.69\,cm. The final stage therefore contributes information beyond simply restoring the number of features visible in each reference view; its additions are chosen relative to the pose constraints already supplied by the map, followed by the support-preserving cleanup described in Sec.~\ref{sec:selection}.
+
+Table~\ref{tab:t7}(b) compares the final selector with simpler alternatives. Compact achieves the lowest median TE and P95 TE and the highest R15 among the listed selectors. Quality Top-K and track-length Top-K reach 8.73 and 9.14\,cm median TE, respectively. Quality Top-K has slightly higher R5 (46.08\% versus 44.25\%), whereas track-length Top-K has lower mean TE (15.71 versus 19.74\,cm). The comparison is consequently not a claim that every individual metric is maximized by Compact; rather, it shows that combining quality, coverage, and conditional pose information yields a balanced operating point after substantial map reduction.
+
+\subsection{Compatibility Across Gaussian Representations}
+\label{sec:priors}
+\input{tables/T8}
+\input{figures/e4}
+
+A useful conversion method should not depend on one particular Gaussian training pipeline. Table~\ref{tab:t8} applies the same downstream construction and selection procedure to seven input conditions, including vanilla 3DGS, MAtCha, vanilla 2DGS, incremental i3DGS~\cite{meuleman2026i3dgs}, and feed-forward Long-LRM~\cite{chen2025longlrm}, with the latter two evaluated before and after 1,000 upstream optimization steps. Native upstream settings are retained; only the downstream conversion to an explicit landmark map is shared.
+
+Vanilla 3DGS, MAtCha, and vanilla 2DGS produce similar median TE of 8.54, 8.84, and 8.92\,cm, respectively. For the less mature input reconstructions, upstream optimization substantially changes localization quality: i3DGS improves from 22.90 to 10.86\,cm and Long-LRM from 483.41 to 147.57\,cm. These results support compatibility with different Gaussian representations while making the dependence on input observation quality explicit.
+
+Rendered-image quality alone is not a sufficient predictor of localization quality. Post-optimized Long-LRM has slightly higher mapping-view PSNR than i3DGS (15.34 versus 15.14\,dB), yet its localization error is much larger. Figure~\ref{fig:e4} provides representative renderings, reconstructed maps, and query alignments. The comparison supports using localization measurements, rather than image-reconstruction quality alone, to judge the suitability of a Gaussian scene as an input to map construction.
+
+\subsection{Optional Use of Mapping Images}
+\label{sec:input-availability}
+\input{tables/T9}
+
+Original mapping images can provide additional observations when they are available, but they are not required by the default conversion. Table~\ref{tab:t9} compares the rendering-only default with an image-only reference and a combined input. The rendering-only and image-only conditions use up to 2,048 features per reference view; the image-only condition does not use Gaussian-dependent filtering or depth augmentation. The combined condition uses 1,024 features from each source and applies observation filtering to both. All conditions share the same query processing and adaptive map selector, with the reported map sizes arising naturally from the available observations.
+
+Adding original images improves the Compact median TE from 8.54 to 8.28\,cm and R5 from 44.25\% to 45.40\%, at the cost of increasing storage from 126.73 to 163.95\,MB. Image-only maps reach 7.71\,cm but require 358.08\,MB. The Full map also benefits from the additional observations, reaching 6.57\,cm and 47.52\% R5. This experiment treats original images as an optional source of additional evidence rather than as a requirement of the framework.
+
+\subsection{Limitations}
+\label{sec:limitations}
+
+The resulting map remains dependent on the quality and coverage of the reference observations. Rendering errors that are consistent across views can survive the observation checks and enter a track, while a single fused descriptor may be insufficient for large appearance changes. The selection criteria are derived from reference-view support and local pose information; their benefit therefore depends on how well the selected views represent the eventual query distribution. Finally, the evaluation targets known-scene single-image relocalization. Very large environments may require retrieval or spatial partitioning, and changing environments would require map maintenance beyond the present offline construction setting.

@@ -1,0 +1,20 @@
+{
+  "center": {
+    "anchor_ids": true,
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "mapping_residuals_equal": true
+  },
+  "depth": {
+    "anchor_ids": true,
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "mapping_residuals_equal": true
+  },
+  "ray": {
+    "anchor_ids": true,
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "mapping_residuals_equal": true
+  }
+}

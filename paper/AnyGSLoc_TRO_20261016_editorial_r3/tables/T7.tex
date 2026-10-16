@@ -1,0 +1,26 @@
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{1.5pt}
+\renewcommand{\arraystretch}{1.15}
+\caption{Landmark selection and equal-budget alternatives}\label{tab:t7}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Selection & Points & \shortstack{Med. TE/RE\\(cm/deg)} & \shortstack{P95 TE\\(cm)} & R15 (\%) \\
+\midrule
+Full & 560,996 & 7.817/0.117 & 43.907 & 74.54 \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{(a) Selection stages}} \\
+Q & 96,256 & 8.997/\underline{0.123} & 57.900 & 71.68 \\
+Q+C & 103,274 & \underline{8.931}/\underline{0.123} & \underline{55.829} & \underline{72.15} \\
+Q+C+P (Compact) & 121,379 & \textbf{8.537}/\textbf{0.121} & \textbf{45.691} & \textbf{73.12} \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{(b) Same per-scene landmark budget}} \\
+Spatial sampling & 121,379 & 14.222/0.197 & 95.939 & 59.04 \\
+Quality Top-$K$ & 121,379 & \underline{8.729}/\textbf{0.119} & 56.497 & \underline{71.99} \\
+Track-length Top-$K$ & 121,379 & 9.144/0.124 & \underline{49.582} & 71.93 \\
+Q+C+P (Compact) & 121,379 & \textbf{8.537}/\underline{0.121} & \textbf{45.691} & \textbf{73.12} \\
+\bottomrule
+\end{tabular*}
+\tabnote{Q: quality pruning; C: coverage completion; P: pose-aware completion including cleanup. Full is the reference before selection. Compact is repeated in (b) for direct comparison. Bold/underline: best/second-best within each block; point counts are not ranked.}
+\end{table}

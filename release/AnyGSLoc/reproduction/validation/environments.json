@@ -1,0 +1,164 @@
+{
+  "matcha": {
+    "profile": "matcha",
+    "conda_env": "cybersim_agent",
+    "python": "3.9.12",
+    "packages": {
+      "torch": "2.0.1+cu118",
+      "numpy": "1.26.4"
+    },
+    "imports": {
+      "torch": "passed",
+      "numpy": "passed",
+      "diff_surfel_rasterization": "passed",
+      "simple_knn._C": "passed"
+    },
+    "device": "cuda:0",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "capability": [
+        8,
+        6
+      ]
+    },
+    "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2022 NVIDIA Corporation\nBuilt on Wed_Sep_21_10:33:58_PDT_2022\nCuda compilation tools, release 11.8, V11.8.89\nBuild cuda_11.8.r11.8/compiler.31833905_0",
+    "validation_scope": "Environment import/runtime check only; upstream training not rerun",
+    "errors": [],
+    "passed": true
+  },
+  "main": {
+    "profile": "main",
+    "conda_env": "g4splat",
+    "python": "3.9.12",
+    "packages": {
+      "torch": "2.0.1+cu118",
+      "torchvision": "0.15.2+cu118",
+      "numpy": "1.26.4",
+      "poselib": "2.0.5",
+      "gsplat": "1.5.3",
+      "opencv-python-headless": "4.12.0.88",
+      "Pillow": "9.5.0",
+      "scipy": "1.13.1",
+      "ninja": "1.13.0",
+      "plyfile": "1.1.3",
+      "PyYAML": "6.0.3",
+      "matplotlib": "3.9.4",
+      "pytest": "8.4.2",
+      "kornia": "0.8.2",
+      "omegaconf": "2.3.0"
+    },
+    "imports": {
+      "torch": "passed",
+      "numpy": "passed",
+      "cv2": "passed",
+      "PIL.Image": "passed",
+      "poselib": "passed",
+      "gsplat": "passed"
+    },
+    "device": "cuda:0",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "capability": [
+        8,
+        6
+      ]
+    },
+    "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2022 NVIDIA Corporation\nBuilt on Wed_Sep_21_10:33:58_PDT_2022\nCuda compilation tools, release 11.8, V11.8.89\nBuild cuda_11.8.r11.8/compiler.31833905_0",
+    "validation_scope": "Full/Compact and geometry rebuild + all ShopFacade queries verified; not all scenes rerun",
+    "errors": [],
+    "passed": true
+  },
+  "long-lrm": {
+    "profile": "long-lrm",
+    "conda_env": "long_lrm22",
+    "python": "3.10.20",
+    "packages": {
+      "torch": "2.2.0+cu121",
+      "numpy": "1.25.0"
+    },
+    "imports": {
+      "torch": "passed",
+      "numpy": "passed"
+    },
+    "device": "cuda:0",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "capability": [
+        8,
+        6
+      ]
+    },
+    "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2022 NVIDIA Corporation\nBuilt on Wed_Sep_21_10:33:58_PDT_2022\nCuda compilation tools, release 11.8, V11.8.89\nBuild cuda_11.8.r11.8/compiler.31833905_0",
+    "validation_scope": "Core environment import/runtime check only; upstream inference not rerun",
+    "errors": [],
+    "passed": true
+  },
+  "native": {
+    "profile": "native",
+    "conda_env": "ulfloc_repro",
+    "python": "3.8.20",
+    "packages": {
+      "torch": "2.4.1+cu118",
+      "torchvision": "0.19.1+cu118",
+      "numpy": "1.24.4",
+      "poselib": "2.0.5",
+      "gsplat": "1.5.3",
+      "opencv-python-headless": "4.13.0.92",
+      "Pillow": "10.4.0",
+      "scipy": "1.10.1",
+      "ninja": "1.13.0",
+      "plyfile": "1.0.3",
+      "PyYAML": "6.0.3",
+      "matplotlib": "3.7.5",
+      "pytest": "8.3.5",
+      "omegaconf": "2.3.0"
+    },
+    "imports": {
+      "torch": "passed",
+      "numpy": "passed",
+      "cv2": "passed",
+      "PIL.Image": "passed",
+      "poselib": "passed",
+      "gsplat": "passed",
+      "simple_knn._C": "passed",
+      "pytorch3d.transforms": "passed"
+    },
+    "device": "cuda:0",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "capability": [
+        8,
+        6
+      ]
+    },
+    "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2022 NVIDIA Corporation\nBuilt on Wed_Sep_21_10:33:58_PDT_2022\nCuda compilation tools, release 11.8, V11.8.89\nBuild cuda_11.8.r11.8/compiler.31833905_0",
+    "validation_scope": "STDLoc/ULF-Loc ShopFacade initial/refined accuracy and one matched timing round each verified",
+    "errors": [],
+    "passed": true
+  },
+  "i3dgs": {
+    "profile": "i3dgs",
+    "conda_env": "i3dgs",
+    "python": "3.12.14",
+    "packages": {
+      "torch": "2.7.1+cu118",
+      "numpy": "1.26.4"
+    },
+    "imports": {
+      "torch": "passed",
+      "numpy": "passed"
+    },
+    "device": "cuda:0",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "capability": [
+        8,
+        6
+      ]
+    },
+    "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2022 NVIDIA Corporation\nBuilt on Wed_Sep_21_10:33:58_PDT_2022\nCuda compilation tools, release 11.8, V11.8.89\nBuild cuda_11.8.r11.8/compiler.31833905_0",
+    "validation_scope": "Core environment import/runtime check only; upstream inference not rerun",
+    "errors": [],
+    "passed": true
+  }
+}

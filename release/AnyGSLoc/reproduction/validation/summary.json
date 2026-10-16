@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-15",
+  "tests": {
+    "passed": 15,
+    "failed": 0
+  },
+  "ruff_check": "passed",
+  "ruff_format": "96 Python files formatted",
+  "table_parity": {
+    "tables": 22,
+    "numeric_cells": 761
+  },
+  "source_scope": "latest downstream AnyGSLoc paper protocols; upstream priors/native trained inventories are supplied inputs",
+  "fresh_scene": "ShopFacade",
+  "fresh_experiments": [
+    "rendered observations (231 views)",
+    "Full and Compact construction",
+    "Full and Compact localization (103 queries each)",
+    "center/depth/ray coordinate controls",
+    "reference PSNR (231 images)",
+    "STDLoc and ULF-Loc initial/refined accuracy (103 queries each)",
+    "one matched timing round each for AnyGSLoc Compact, STDLoc, ULF-Loc (50 warm-ups + 100 measured queries)"
+  ],
+  "figure_regeneration": [
+    "E1",
+    "E2",
+    "E3",
+    "E4",
+    "E5"
+  ],
+  "not_rerun": [
+    "all-scene GPU campaign",
+    "upstream prior/native training",
+    "full 90-process matched timing campaign"
+  ],
+  "public_asset_upload": "not performed",
+  "environment_profiles_checked": [
+    "matcha",
+    "main",
+    "long-lrm",
+    "native",
+    "i3dgs"
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "schema": "matcha_v2_historical_source_inventory_v1",
+  "acceptance_complete": false,
+  "condition": "matcha_v2",
+  "evidence_origin": "Fresh source hash computation completed before the formal timing window; wc_job_2Rqlc4rhehyMpjLF. Reviewer must independently accept actual assets.",
+  "cases": {
+    "matcha_v2/GreatCourt": {
+      "scene": "GreatCourt",
+      "condition": "matcha_v2",
+      "prior": {
+        "ply": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "ply_sha256": "91b2b6b47a2d8c5b8618fae541a5d2b5bde6b90ace381a31e44a56e1cb0362d2",
+        "gaussian_type": "2dgs",
+        "sh_degree": 3
+      },
+      "point_count": 700243,
+      "manifest": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/rgb_prior_manifest.json",
+      "manifest_sha256": "96dff6be35af6ecd5291ab30b856ac5ac2c6f2724cea3d8d72fd38ed5cb10b09",
+      "reuse": "eligible_pending_independent_acceptance"
+    },
+    "matcha_v2/KingsCollege": {
+      "scene": "KingsCollege",
+      "condition": "matcha_v2",
+      "prior": {
+        "ply": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/KingsCollege/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "ply_sha256": "8609462a9734eaef059d0785dcaa23ec6957ed12624d6511f030b3a80442d244",
+        "gaussian_type": "2dgs",
+        "sh_degree": 3
+      },
+      "point_count": 759431,
+      "manifest": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/KingsCollege/prior/rgb_matcha_2dgs/rgb_prior_manifest.json",
+      "manifest_sha256": "a08b752417532e068431df1d22761ad4f38891a9009e9baebfc8519646128d8e",
+      "reuse": "eligible_pending_independent_acceptance"
+    },
+    "matcha_v2/OldHospital": {
+      "scene": "OldHospital",
+      "condition": "matcha_v2",
+      "prior": {
+        "ply": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/OldHospital/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "ply_sha256": "f2dbd089a23bf8f7d0d61e32f34a684d59147519f85db1d7b935e3d8936394d0",
+        "gaussian_type": "2dgs",
+        "sh_degree": 3
+      },
+      "point_count": 817587,
+      "manifest": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/OldHospital/prior/rgb_matcha_2dgs/rgb_prior_manifest.json",
+      "manifest_sha256": "0f9000411753bbbb31d6991fcf26b542c193992b867936257d67881322827c91",
+      "reuse": "eligible_pending_independent_acceptance"
+    },
+    "matcha_v2/ShopFacade": {
+      "scene": "ShopFacade",
+      "condition": "matcha_v2",
+      "prior": {
+        "ply": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "ply_sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb",
+        "gaussian_type": "2dgs",
+        "sh_degree": 3
+      },
+      "point_count": 1202378,
+      "manifest": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/rgb_prior_manifest.json",
+      "manifest_sha256": "c2a6b48a5b55d44d2a2fdadb060375ca18f6dd4f47789798262501006c7dc950",
+      "reuse": "eligible_pending_independent_acceptance"
+    },
+    "matcha_v2/StMarysChurch": {
+      "scene": "StMarysChurch",
+      "condition": "matcha_v2",
+      "prior": {
+        "ply": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/StMarysChurch/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "ply_sha256": "7ad36b92be1506cd1a75a111e8f51612f42928dba8868129e1dcebd7b85ef41e",
+        "gaussian_type": "2dgs",
+        "sh_degree": 3
+      },
+      "point_count": 460299,
+      "manifest": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/StMarysChurch/prior/rgb_matcha_2dgs/rgb_prior_manifest.json",
+      "manifest_sha256": "1cd131e08448d4a4d38d019b72315487f59f3666fadd53e388531297d4b9881f",
+      "reuse": "historical_only_repair_and_retrain_pending"
+    }
+  },
+  "evidence_sha256": {
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply": "91b2b6b47a2d8c5b8618fae541a5d2b5bde6b90ace381a31e44a56e1cb0362d2",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/rgb_prior_manifest.json": "96dff6be35af6ecd5291ab30b856ac5ac2c6f2724cea3d8d72fd38ed5cb10b09",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/KingsCollege/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply": "8609462a9734eaef059d0785dcaa23ec6957ed12624d6511f030b3a80442d244",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/KingsCollege/prior/rgb_matcha_2dgs/rgb_prior_manifest.json": "a08b752417532e068431df1d22761ad4f38891a9009e9baebfc8519646128d8e",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/OldHospital/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply": "f2dbd089a23bf8f7d0d61e32f34a684d59147519f85db1d7b935e3d8936394d0",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/OldHospital/prior/rgb_matcha_2dgs/rgb_prior_manifest.json": "0f9000411753bbbb31d6991fcf26b542c193992b867936257d67881322827c91",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/rgb_prior_manifest.json": "c2a6b48a5b55d44d2a2fdadb060375ca18f6dd4f47789798262501006c7dc950",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/StMarysChurch/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply": "7ad36b92be1506cd1a75a111e8f51612f42928dba8868129e1dcebd7b85ef41e",
+    "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/StMarysChurch/prior/rgb_matcha_2dgs/rgb_prior_manifest.json": "1cd131e08448d4a4d38d019b72315487f59f3666fadd53e388531297d4b9881f"
+  }
+}

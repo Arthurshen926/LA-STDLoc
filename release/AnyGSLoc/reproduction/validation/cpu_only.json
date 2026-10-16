@@ -1,0 +1,7 @@
+{
+  "pytorch_imports_explicitly_blocked": true,
+  "all_reference_metrics_recomputed": true,
+  "table_count": 22,
+  "numeric_cells_checked": 761,
+  "passed": true
+}

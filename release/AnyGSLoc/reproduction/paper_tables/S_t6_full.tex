@@ -1,0 +1,19 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Observation filtering and descriptor fusion on Full maps}
+\label{tab:s_t6_full}
+\begin{tabular}{lcccccc}
+\toprule
+Filter & Fusion & Landmarks & \shortstack{Median TE / RE\\(cm / deg)} & \shortstack{Mean TE\\(cm)} & \shortstack{P95 TE\\(cm)} & R5 (\%) \\
+\midrule
+$\times$ & $\times$ & 624,754 & 8.380 / 0.120 & \textbf{16.583} & 49.523 & 45.97 \\
+$\checkmark$ & $\times$ & 560,996 & 8.329 / 0.120 & 16.627 & 48.279 & 45.81 \\
+$\times$ & $\checkmark$ & 624,754 & \textbf{7.801} / \textbf{0.116} & 19.146 & 44.323 & \textbf{47.65} \\
+$\checkmark$ & $\checkmark$ & 560,996 & 7.817 / 0.117 & 21.124 & \textbf{43.907} & 46.95 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize These are the completed unselected Full-map counterparts to the Compact filtering/fusion table in the main paper. The prior, mapping observations, query masks, and pose backend are unchanged. Within a filtering condition, fusion changes only descriptors. Filtering reduces the resulting Full landmark count but does not improve every accuracy metric. These results are retained separately from the adaptive Compact maps. Bold compares the four Full configurations; landmark count is not an accuracy ranking.\end{minipage}
+\end{table*}

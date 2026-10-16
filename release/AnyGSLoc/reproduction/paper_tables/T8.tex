@@ -1,0 +1,23 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Sensitivity to the Gaussian prior using Compact maps}
+\label{tab:t8}
+\begin{tabular}{lccccc}
+\toprule
+Prior & \shortstack{Median TE / RE\\(cm / deg)} & R5 (\%) & Landmarks & \shortstack{Map size\\(MB)} & \shortstack{Ref. PSNR\\(dB)} \\
+\midrule
+Vanilla 3DGS & \textbf{8.537} / \textbf{0.121} & \textbf{44.25} & 121,379 & \textbf{126.73} & \textbf{16.72} \\
+MAtCha & 8.844 / 0.132 & 42.07 & 188,002 & 196.28 & 15.46 \\
+Vanilla 2DGS & 8.922 / 0.127 & 39.95 & 188,538 & 196.84 & 15.70 \\
+i3DGS raw & 22.904 / 0.384 & 11.77 & 336,454 & 351.27 & 13.66 \\
+i3DGS +1k & 10.858 / 0.175 & 30.29 & 234,265 & 244.58 & 15.14 \\
+Long-LRM raw & 483.413 / 7.344 & 11.25 & 301,718 & 315.00 & 13.56 \\
+Long-LRM +1k & 147.566 / 3.178 & 22.50 & 250,246 & 261.27 & 15.34 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Every prior uses the same indicated map mode; no per-prior mode selection is made. PSNR is the scene-equal mean over 5,364 mapping/reference training views, not a held-out novel-view score. +1k denotes 1,000 upstream optimization steps. Native recipes, initialization, localization-render backgrounds, and natural map sizes differ. Storage is summed over five scenes. The corresponding Full results appear in the supplement. Bold compares all seven Compact priors; lower map size and higher reference-view PSNR are cost/appearance measures, not claims of causal superiority. Landmark count is not ranked.\end{minipage}
+\end{table*}
+

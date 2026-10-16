@@ -1,0 +1,33 @@
+AnyGSLoc T-RO 配图同步说明（2026-10-14）
+
+依据：当前 main.tex、已接收的 2026-10-13 定量表、对应的原始地图/选择记录/查询位姿/PSNR记录。使用 ieee-figure-table 的证据对应、最终栏宽可读性、矢量输出与数据分层流程。没有重新训练或运行定位评估；新增的是固定已保存位姿的离线渲染、真实地图投影和图件导出。
+
+逐图处理（编号按最新主文）
+
+Fig. 1：统一三种坐标来源为 Gaussian centers / Rendered depth / Multiview triangulation，与 Table V 和 Fig. 7 一致。保留几何原理与 query/result 拼接构图；下方定位结果改用本轮 vanilla 3DGS Compact 的生产位姿与渲染。上方仍承担几何来源的原理说明，不把三种坐标估计器画成共同求解位姿。
+
+Fig. 2：换用默认 3DGS 的真实 RGB/opacity/depth、新 Full/Compact 地图、当前查询位姿。Great Court 的数量为 201,063 → 44,631。保留清楚的离线建图/在线定位两层结构；与 Fig. 4 共用真实地图投影。
+
+Fig. 3：将过滤、主 track、描述子融合、depth-guided 补充 track 换为本轮 T8 MAtCha 构建的记录。主 track 为107次观测（两个视角组为3、104），图面仍用 n_A/n_B；重算融合描述子与保存值余弦相似度为1.0。过滤行判定重放通过。默认 3DGS Great Court 本轮没有产生通过描述子检查的补充 track，因此不把旧补充样本冒充该配置；采用当前 MAtCha 的真实补充样本说明算法分支，并在图注明确对应 T8。两条路径共同输出 feature tracks，最终位置仍由三角化得到。
+
+Fig. 4：换成当前默认 3DGS 的完整选择过程：201,063 → 37,376 → 40,717 → 44,631。覆盖补点3,341，位姿补点4,096，清理182。质量散点使用当前两个真实质量因子；覆盖补点示例使用当前一对一支持记录；C/D也从当前地图和相机重新计算。前后不确定性轮廓仍是解释机制的示意，保持同一 before，图注说明相对变化为便于观察而突出。C/D标签已分开。根据后续版式反馈，上方仅保留 Full map 和 Compact map 两个端点标题；三个箭头统一改为 Quality pruning / Coverage completion / Pose-aware completion，与下方三个模块逐一对应。各阶段数量仅写在地图下方，增量和清理数保留在图注，避免将最后一阶段的净增加3,914误写成加入4,096后的直接结果。绘图脚本的图注也改为由当前数据生成。
+
+Fig. 5 / E1：按 Table IV 更新 STDLoc、ULF-Loc 的 mapping/query semantics-on 初始和最终位姿；加入分开的 AnyGSLoc Full/Compact。所有方法共用当前 vanilla 3DGS 模型、相机和裁剪，不将每种方法的原生渲染质量混入对齐比较。实际渲染并逐一检查保存位姿、误差和对角拼接像素；误差移至图片下方。
+
+Fig. 6 / E5：恢复两图结构——query-core latency 与 deployment storage。删除单独的 Complete-frame latency 子图。STDLoc 初始343.394 ms → 最终518.012 ms，精修增量174.618 ms；ULF-Loc 初始549.349 ms → 最终1574.003 ms，增量1024.654 ms。初始/最终是同一完整流程的累计检查点，均含此前共享特征计算；不是独立测得的粗定位部署方案。Full和Compact各用自己的准确率、时间、存储坐标，所有六个时间点与Table IV全精度值一致。Frame数据留在补充材料。
+
+Fig. 7 / E2：直接使用最新 T5 vanilla 3DGS 共同观测记录重新画ECDF。St. Mary's Church共116,303个landmarks、1,346,981次观测、1,487个参考视图。三角化/中心/深度残差中位数为0.68/4.92/17.32 px；无效投影保留在分母。正文同步更新，不沿用旧曲线。它是mapping-view拟合诊断，Table V提供独立query定位结果。
+
+Fig. 8 / E3：保留并核验本轮Full/Compact地图及source_rows身份对应，改为Compact只显示保留点。共享PCA基底、颜色和点大小。换用更清楚的Old Hospital局部裁剪；完整五景数量560,996 → 121,379，减少78.36%。图内删除“未做遮挡测试”等实现说明，投影细节保留在源记录。
+
+Fig. 9 / E4：五列均换成本轮先验、Compact地图、查询位姿和reference-view PSNR；3DGS排首列。共用当前vanilla 3DGS模型展示最终位姿对齐，原始输入先验的渲染另列。移除图内 descriptor PCA 文字，在Fig. 8图注统一说明配色惯例。Long-LRM继续保留于Table VIII，无需为同步数据强行压缩现有五列版面。
+
+术语与输出
+- 方法名统一为 track-based reconstruction；几何消融统一称 multiview triangulation，避免“rays”混淆输入和估计操作。
+- 九图图注全部对应上述当前数据，不再用 archived configuration 说明旧实验。
+- 示意路径和文字保留矢量；方法图嵌入光栅层按最终尺寸最多600 ppi，原始图像素材未改动。主文PDF从初步整合的约55 MB降至约21 MB。
+- 原稿已保存在 before_update.zip；完整工作源在本目录各图子目录。
+
+交付：delivery/ 下有九页前后对照、九图单独PDF、总览PNG、可编辑SVG/PDF/PNG包和完整LaTeX包。规范主文已直接更新回 ../AnyGSLoc_TRO_20261012_writing/main.pdf；该目录 latex_source.zip 亦同步更新。
+
+校验：validation_20261014.json 和主文 checks/integration_validation.json。22张主/补表的1,819个数值token与已接收基准一致；主文17页、补充材料6页；无未定义引用、排版溢出或缺字；图中文字均在页面内，字体嵌入且无Type3。较小字体仅用于数学下标，正文标签最低7 pt。具体图级渲染与数据校验见JSON。

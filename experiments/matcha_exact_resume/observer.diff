@@ -1,0 +1,80 @@
+--- /root/MAtCha/2d-gaussian-splatting/train_with_charts.py
++++ /root/STDLoc/experiments/matcha_exact_resume/train_with_charts_observer.py
+@@ -12,6 +12,9 @@
+ import os
+ import sys
+ import json
++sys.path.insert(0, "/root/MAtCha")
++sys.path.insert(0, "/root/MAtCha/2d-gaussian-splatting")
++from exact_resume import Controller, add_arguments
+ from typing import Optional
+ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+@@ -187,7 +190,7 @@
+         loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * dssim
+     else:
+         loss = Ll1
+-    return {"Ll1": Ll1, "loss": loss}
++    return {"Ll1": Ll1, "loss": loss, "dssim": dssim if lambda_dssim > 0.0 else None}
+ 
+ 
+ class PerImageAffineColorCorrection(torch.nn.Module):
+@@ -855,6 +858,9 @@
+     save_log_images = False
+     save_log_images_every_n_iter = 200
+     
++    if args.exact_resume is not None:
++        raise RuntimeError("native observer never restores checkpoints")
++    exact = Controller(args, locals())
+     first_iter = 0
+     tb_writer = prepare_output_and_logger(dataset)
+     gaussians = GaussianModel(dataset.sh_degree)
+@@ -1448,10 +1454,14 @@
+             f"with indices {rgb_mask_lookup.mask_indices}"
+         )
+ 
++    assert exact.prepare(locals()) is None
+     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+     first_iter += 1
++    exact.restore_rng_last()
++    exact.verify_restored_boundary(locals())
+     for iteration in range(first_iter, opt.iterations + 1):        
+ 
++        exact.before_step(iteration)
+         iter_start.record()
+ 
+         gaussians.update_learning_rate(iteration)
+@@ -1485,6 +1495,7 @@
+             viewpoint_idx = dense_viewpoint_idx_stack.pop(randint(0, len(dense_viewpoint_idx_stack)-1))
+             viewpoint_cam = dense_viewpoint_cams[viewpoint_idx]
+         
++        exact.observe_view(locals())
+         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+         
+@@ -1956,10 +1967,17 @@
+             if (iteration in checkpoint_iterations):
+                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
++            if network_gui.conn is not None:
++                raise RuntimeError("exact-resume: live GUI is unsupported")
++            if exact.boundary(locals()):
++                progress_bar.close()
++                break
+ 
+         with torch.no_grad():        
+             if network_gui.conn == None:
+                 network_gui.try_connect(dataset.render_items)
++                if network_gui.conn is not None:
++                    raise RuntimeError("exact-resume: GUI connection refused before render")
+             while network_gui.conn != None:
+                 try:
+                     net_image_bytes = None
+@@ -2258,6 +2276,7 @@
+         default=3001,
+         help="First iteration at which --chart_late_prior_selection_json becomes active.",
+     )
++    add_arguments(parser)
+     args = parser.parse_args(sys.argv[1:])
+     args.save_iterations.append(args.iterations)
+     if args.early_stop_iteration is not None:

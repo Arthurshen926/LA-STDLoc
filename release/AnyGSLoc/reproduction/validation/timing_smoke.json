@@ -1,0 +1,30 @@
+{
+  "scope": "ShopFacade, round 0 only; invocation and measurement-boundary validation, not replacement paper latency",
+  "fresh_processes": 3,
+  "complete_paper_timing_campaign": false,
+  "methods": {
+    "ULFLoc": {
+      "measured_queries": 100,
+      "warmup_queries": 50,
+      "warmups_excluded": true,
+      "all_frames_have_core_and_frame_time": true,
+      "storage_bytes": 105338834,
+      "native_cumulative_stages_consistent": true
+    },
+    "STDLoc": {
+      "measured_queries": 100,
+      "warmup_queries": 50,
+      "warmups_excluded": true,
+      "all_frames_have_core_and_frame_time": true,
+      "storage_bytes": 527091435,
+      "native_cumulative_stages_consistent": true
+    },
+    "AnyGSLoc": {
+      "measured_queries": 100,
+      "warmup_queries": 50,
+      "warmups_excluded": true,
+      "all_frames_have_core_and_frame_time": true,
+      "storage_bytes": 12544262
+    }
+  }
+}

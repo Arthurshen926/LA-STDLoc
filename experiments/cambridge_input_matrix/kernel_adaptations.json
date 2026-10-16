@@ -1,0 +1,83 @@
+{
+  "note": "These exact, nonnumerical adapters are verified against upstream source and numerical regression tests.",
+  "patches": [
+    {
+      "source": "anygsloc/mapping/projective_association.py",
+      "target": "experiments/cambridge_input_matrix/projective_association.py",
+      "edits": [
+        {
+          "old_text": "\"\"\"Frozen mainline kernel extracted from evidence.projective_association.\"\"\"",
+          "new_text": "\"\"\"Experimental input adapter of anygsloc/mapping/projective_association.py; numerical kernels unchanged.\"\"\""
+        },
+        {
+          "old_text": "from anygsloc.mapping.contracts import ASSOCIATION_GRAPH_SCHEMA",
+          "new_text": "from .contracts import ASSOCIATION_GRAPH_SCHEMA, source_contract"
+        },
+        {
+          "old_text": "    for view in views:\n        _render_valid_rows(view)",
+          "new_text": "    source_contract(observations)\n    if observations.payload['input_mode'] != 'raw_only':\n        for view in views:\n            _render_valid_rows(view)"
+        },
+        {
+          "old_text": "        \"uses_source_mapping_rgb\": False,\n        \"uses_test_queries\": False,",
+          "new_text": "        **source_contract(observations),"
+        },
+        {
+          "old_text": "\"render_valid_observations_required\": True",
+          "new_text": "\"render_valid_observations_required\": observations.payload[\"input_mode\"] != \"raw_only\""
+        }
+      ]
+    },
+    {
+      "source": "anygsloc/mapping/projective_reconstruction.py",
+      "target": "experiments/cambridge_input_matrix/projective_reconstruction.py",
+      "edits": [
+        {
+          "old_text": "\"\"\"Frozen mainline kernel extracted from evidence.projective_reconstruction.\"\"\"",
+          "new_text": "\"\"\"Experimental input adapter of anygsloc/mapping/projective_reconstruction.py; numerical kernels unchanged.\"\"\""
+        },
+        {
+          "old_text": "from anygsloc.mapping.contracts import ANCHOR_CANDIDATE_SCHEMA, ASSOCIATION_GRAPH_SCHEMA",
+          "new_text": "from .contracts import ANCHOR_CANDIDATE_SCHEMA, ASSOCIATION_GRAPH_SCHEMA, source_contract, require_association"
+        },
+        {
+          "old_text": "    if (\n        association.get(\"uses_source_mapping_rgb\") is not False\n        or association.get(\"uses_test_queries\") is not False\n    ):\n        raise ValueError(\"association is outside the mapping-only scope\")",
+          "new_text": "    require_association(association, observations)"
+        },
+        {
+          "old_text": "        \"uses_source_mapping_rgb\": False,\n        \"uses_test_queries\": False,",
+          "new_text": "        **source_contract(observations),"
+        }
+      ]
+    },
+    {
+      "source": "anygsloc/mapping/projective_completion.py",
+      "target": "experiments/cambridge_input_matrix/projective_completion.py",
+      "edits": [
+        {
+          "old_text": "\"\"\"Frozen mainline kernel extracted from evidence.projective_completion.\"\"\"",
+          "new_text": "\"\"\"Experimental input adapter of anygsloc/mapping/projective_completion.py; numerical kernels unchanged.\"\"\""
+        },
+        {
+          "old_text": "from anygsloc.mapping.contracts import ANCHOR_CANDIDATE_SCHEMA",
+          "new_text": "from .contracts import ANCHOR_CANDIDATE_SCHEMA, ASSOCIATION_GRAPH_SCHEMA, source_contract"
+        },
+        {
+          "old_text": "from anygsloc.mapping.projective_reconstruction import reconstruct_projective_anchors",
+          "new_text": "from .projective_reconstruction import reconstruct_projective_anchors"
+        },
+        {
+          "old_text": "    if not float(voxel_size_m) > 0:",
+          "new_text": "    source_contract(observations)\n    if observations.payload[\"input_mode\"] == \"raw_only\":\n        raise ValueError(\"raw-only completion is undefined and disabled\")\n    if not float(voxel_size_m) > 0:"
+        },
+        {
+          "old_text": "        \"schema\": \"projective_association_graph_v2\",",
+          "new_text": "        \"schema\": ASSOCIATION_GRAPH_SCHEMA,"
+        },
+        {
+          "old_text": "        \"uses_source_mapping_rgb\": False,\n        \"uses_test_queries\": False,",
+          "new_text": "        **source_contract(observations),"
+        }
+      ]
+    }
+  ]
+}

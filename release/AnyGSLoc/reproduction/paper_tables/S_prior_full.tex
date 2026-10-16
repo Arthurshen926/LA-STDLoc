@@ -1,0 +1,22 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Full-map results for every Gaussian prior}
+\label{tab:s_prior_full}
+\begin{tabular}{lccccc}
+\toprule
+Prior & \shortstack{Median TE / RE\\(cm / deg)} & R5 (\%) & Landmarks & \shortstack{Map size\\(MB)} & \shortstack{Ref. PSNR\\(dB)} \\
+\midrule
+Vanilla 3DGS & \textbf{7.817} / \textbf{0.117} & \textbf{46.95} & 560,996 & 585.69 & \textbf{16.72} \\
+MAtCha & 8.365 / 0.126 & 43.42 & 532,663 & 556.11 & 15.46 \\
+Vanilla 2DGS & 8.638 / 0.122 & 42.35 & 522,162 & 545.15 & 15.70 \\
+i3DGS raw & 22.537 / 0.385 & 11.18 & 571,839 & 597.01 & 13.66 \\
+i3DGS +1k & 10.396 / 0.170 & 30.39 & 511,736 & \textbf{534.26} & 15.14 \\
+Long-LRM raw & 433.693 / 6.892 & 11.56 & 771,957 & 805.93 & 13.56 \\
+Long-LRM +1k & 147.731 / 2.963 & 24.11 & 622,730 & 650.14 & 15.34 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Every prior uses the same indicated map mode; no per-prior mode selection is made. PSNR is the scene-equal mean over 5,364 mapping/reference training views, not a held-out novel-view score. +1k denotes 1,000 upstream optimization steps. Native recipes, initialization, localization-render backgrounds, and natural map sizes differ. Storage is summed over five scenes. Bold compares all seven Full priors; landmark count is not ranked.\end{minipage}
+\end{table*}

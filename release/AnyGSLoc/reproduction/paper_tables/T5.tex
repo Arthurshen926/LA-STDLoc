@@ -1,0 +1,25 @@
+\begin{table}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Coordinate estimation with shared observations}
+\label{tab:t5}
+\begin{tabular}{lcc}
+\toprule
+Coordinate source & \shortstack{Median TE / RE\\(cm / deg)} & R5 (\%) \\
+\midrule
+\multicolumn{3}{l}{\textit{(a) Vanilla 3DGS}} \\
+Gaussian centers & 9.978 / 0.141 & 37.83 \\
+Rendered depth & 94.831 / 0.878 & 8.04 \\
+\shortstack[l]{Multiview\\triangulation} & \textbf{7.950} / \textbf{0.119} & \textbf{46.21} \\
+\midrule
+\multicolumn{3}{l}{\textit{(b) MAtCha}} \\
+Gaussian centers & 10.509 / 0.149 & 35.96 \\
+Rendered depth & 9.459 / 0.153 & 31.12 \\
+\shortstack[l]{Multiview\\triangulation} & \textbf{8.511} / \textbf{0.132} & \textbf{42.34} \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Within each prior, landmark IDs, eligible observations, production-Full descriptors, and the query backend are fixed, with no selection. The common pools contain 421,224 landmarks for vanilla 3DGS and 352,334 for MAtCha. The pools differ across priors and are not the complete production maps. Gaussian-center and rendered-depth proposals use componentwise lower medians; triangulation uses all common observations with uniform base weights and three Huber reweighting iterations. Bold is ranked separately within each prior.\end{minipage}
+\end{table}
+

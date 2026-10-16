@@ -1,0 +1,33 @@
+{
+  "schema": "matcha_source_repair_synthetic_cpu_tests_v1",
+  "scope": "Synthetic CPU contract tests only; no real 20-chart/512-dense conversion and no GPU/checkpoint test.",
+  "observed_utc": "2026-10-12T04:56:00Z",
+  "project": "agent:pakka-container:stdloc",
+  "cwd": "/root/STDLoc",
+  "executable": "/root/miniconda3/envs/cybersim_agent/bin/python",
+  "argv": [
+    "-B",
+    "experiments/matcha_source_repair/test_prepare.py"
+  ],
+  "assertion_name": "synthetic_cpu_pose_transport_contract_final",
+  "tests_run": 8,
+  "result": "OK",
+  "reported_test_seconds": 0.018,
+  "tests": [
+    "missing_name_and_bad_q_fail",
+    "only_qt_replaced",
+    "point_owner_transport_and_nonxyz_preserved",
+    "frozen_horizon_and_type",
+    "unauthorized_destination_fails_before_reads",
+    "affine_local_frame",
+    "bad_transforms_rejected",
+    "scaled_float32_roundtrip"
+  ],
+  "source_sha256": {
+    "/root/STDLoc/experiments/matcha_source_repair/prepare.py": "8202a64f82e3b0aa5ed6ba7fd77cb08ef39d48a14888c037cb6a9dc6594822b6",
+    "/root/STDLoc/experiments/matcha_source_repair/test_prepare.py": "614933e144dde986e15ee5ef7ffe6a46e643a386c104f8a23e488fa1f07784b1"
+  },
+  "large_input_conversion_run": false,
+  "gpu_run": false,
+  "provenance": "Observed official WebCodex run_process tool result; this file is a structured summary, not a verbatim raw process log."
+}

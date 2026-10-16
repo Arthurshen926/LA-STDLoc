@@ -1,0 +1,20 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Mapping observations under Full and Compact map variants}
+\label{tab:t9}
+\begin{tabular}{lcccccc}
+\toprule
+\multicolumn{1}{c}{} & \multicolumn{3}{c}{Full} & \multicolumn{3}{c}{Compact} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Mapping observations & \shortstack{Median TE / RE\\(cm / deg)} & R5 (\%) & Map (MB) & \shortstack{Median TE / RE\\(cm / deg)} & R5 (\%) & Map (MB) \\
+\midrule
+Gaussian renderings & 7.817 / 0.117 & 46.95 & 585.69 & 8.537 / 0.121 & 44.25 & \textbf{126.73} \\
+Reference images & 7.249 / 0.124 & 43.94 & \textbf{550.22} & \textbf{7.706} / 0.123 & 42.31 & 358.08 \\
+Both & \textbf{6.567} / \textbf{0.107} & \textbf{47.52} & 589.70 & 8.282 / \textbf{0.119} & \textbf{45.40} & 163.95 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize Gaussian renderings uses up to 2,048 rendered-image feature candidates per view. Reference images uses 2,048 original-image candidates without the Gaussian-dependent filter or depth completion. Both allocates 1,024 candidates to each source with observation filtering applied to both. All use the same semantic-on query backend. Bold compares the three observation sources separately within each map variant. Compact uses natural selection sizes, not matched storage. Map size is the five-scene localization deployment map only; it excludes the source Gaussian scene and construction assets. Mean TE, P90, and R15 are retained in the supplement.\end{minipage}
+\end{table*}

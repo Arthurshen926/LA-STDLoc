@@ -1,0 +1,26 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete Compact and Full observation/fusion metrics}
+\label{tab:s_filter_fusion}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & P95 TE & R5 (\%) & R15 (\%) \\
+\midrule
+\multicolumn{7}{l}{\textit{Compact}} \\
+Compact / filter\_off\_single & 8.792 / 0.124 & 20.438 & 38.472 & 55.759 & 41.51 & 72.06 \\
+Compact / filter\_on\_single & 8.883 / 0.124 & \textbf{19.178} & 36.518 & 54.814 & 41.59 & 71.89 \\
+Compact / filter\_off\_fused & \textbf{8.533} / 0.122 & 21.244 & 30.462 & 50.038 & \textbf{44.33} & 72.72 \\
+Compact / filter\_on\_fused & 8.537 / \textbf{0.121} & 19.740 & \textbf{30.135} & \textbf{45.691} & 44.25 & \textbf{73.12} \\
+\midrule
+\multicolumn{7}{l}{\textit{Full}} \\
+Full / filter\_off\_single & 8.380 / 0.120 & \textbf{16.583} & 30.720 & 49.523 & 45.97 & 74.10 \\
+Full / filter\_on\_single & 8.329 / 0.120 & 16.627 & 30.657 & 48.279 & 45.81 & 73.37 \\
+Full / filter\_off\_fused & \textbf{7.801} / \textbf{0.116} & 19.146 & 30.557 & 44.323 & \textbf{47.65} & \textbf{74.67} \\
+Full / filter\_on\_fused & 7.817 / 0.117 & 21.124 & \textbf{29.887} & \textbf{43.907} & 46.95 & 74.54 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize TE statistics are in cm and all statistics are scene-equal. Bold compares the four configurations separately within each map variant. Point counts and controls are given in the main Compact table and the Full counterpart. Landmark count is not an accuracy ranking.\end{minipage}
+\end{table*}

@@ -1,0 +1,22 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete selection metrics}
+\label{tab:s_selection}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & P95 TE & R5 (\%) & R15 (\%) \\
+\midrule
+full & \textbf{7.817} / \textbf{0.117} & 21.124 & \textbf{29.887} & \textbf{43.907} & \textbf{46.95} & \textbf{74.54} \\
+quality\_stage & 8.997 / 0.123 & 25.466 & 38.053 & 57.900 & 44.95 & 71.68 \\
+coverage\_stage & 8.931 / 0.123 & 24.635 & 34.300 & 55.829 & 44.83 & 72.15 \\
+native\_compact & \underline{8.537} / 0.121 & 19.740 & \underline{30.135} & \underline{45.691} & 44.25 & \underline{73.12} \\
+spatial & 14.222 / 0.197 & 98.922 & 59.376 & 95.939 & 31.50 & 59.04 \\
+quality\_topk & 8.729 / \underline{0.119} & 23.314 & 34.562 & 56.497 & \underline{46.08} & 71.99 \\
+tracklength\_topk & 9.144 / 0.124 & \textbf{\underline{15.708}} & 31.643 & 49.582 & 42.63 & 71.93 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize TE statistics are in cm; all are scene-equal. See the main table for point counts and experimental controls. Bold compares all seven selections; underlining compares the four identical-budget alternatives.\end{minipage}
+\end{table*}

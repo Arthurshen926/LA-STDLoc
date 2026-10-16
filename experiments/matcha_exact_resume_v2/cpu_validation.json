@@ -1,0 +1,42 @@
+{
+  "cuda_initialized": false,
+  "errors": 0,
+  "failures": 0,
+  "files": {
+    "audit_v2_ast.py": "5375702296c65e2dbf4a2b5360f42fc33f065937b596b9b56b41152ac9f54b66",
+    "benchmark_diagnostic_cpu.py": "b06388ea54b97024e3f658d5e2f206e1a7f702a68cef92deca56fdafaaf725a6",
+    "benchmark_measured_exact_resume.py": "076e308c04743f617105de8b8f896926035f531613a2dbd9f101064bb7d76280",
+    "build_observer.py": "685eb18bce0a56f32e317331e923bff0c4db4d7a8341cf1120d75aa8110c30cc",
+    "build_trainer.py": "1a9f1aa29b607b8be74c5ab4537b7dbea1c8b23407e573dab2be6c448c296a4f",
+    "continuation_gate.py": "c293fcddb5932c1c1bf504fa08ba337d924b9cfc44394e9c7b10f24eb436af81",
+    "diagnostic_cpu.py": "194101966fd02c42f0af17f64b754f74a59dd573c4acde998ccd01c8a69a236b",
+    "exact_resume.py": "3a95c8747b3a1e3a96494edec4d40e96afa31edbfbc978684f16291655d89c03",
+    "freeze_binding.py": "ae8d503b43f8bdd41ba875115240b2e4e983a746b2b9e30eea555cd314ba3d2f",
+    "native_b_prefix_launcher.py": "d519101d1b727078496950f650648a6d525bd45c1499370c6d513885a68e161f",
+    "native_n8_launcher.py": "1ac62f1cb9f89459774c57b24cc22235bc19c07a6ee1c5cd2e0248ff12ad6174",
+    "prefix_gate.py": "43b4bafcf1165e5bf7c23972c44494ca00ac27960037759e9c79ada2c401e2fd",
+    "project_a_reference.py": "644fc452589babcf90a4bbc579ebd30a062d3c89912766e5ad28c72b589f147c",
+    "run_cpu_checks.py": "957a644018d5fcbed02c503017e5beb646f2d7515c2a004d3357d10162e0890f",
+    "test_b_launcher_cpu.py": "8c45531af114b78adecd2162103bec067215fe7c32f83eeed4183d18d4a2b0e7",
+    "test_cpu_contracts.py": "f81c93b99b55ed02f11a9acb1654e78a32489d4ee719642cb5dffc548bbca288",
+    "test_diagnostic_cpu.py": "3518d1a16b5e6b4a4ebc534e5dc866b96afa380e5e7cb2b165aa25eab4c6de61",
+    "test_launcher_cpu.py": "9fcab64c6c9481e76d7c109a96e1c03528ccf5868a32725e1f7365e71d422eb0",
+    "test_prefix_gate_cpu.py": "649154f9b833f8d9199442060ffeeb5df08948648597cb8e406fece71cd9c383",
+    "test_projection_cpu.py": "0e51bf235dba3b362178e6fc78b9a081299f64023ff5eb025f8fe897369cc4f9",
+    "train_with_charts_exact.py": "92e6fb0cf01af2a1b729f6ffa523eea43d0adb15f09267d10ba915a493f49f43",
+    "train_with_charts_observer.py": "36a6bd905df2585e3bd0e6a668ddbbf94ac52f2cd0f14ec6e2069170b48d0b0d"
+  },
+  "fixture_gaussians": 3,
+  "fixture_image_size": [
+    2,
+    2
+  ],
+  "gpu_equivalence_executed": false,
+  "passed": true,
+  "production_input_read": false,
+  "real_signal_and_lease_cpu_tests": true,
+  "schema": "matcha_exact_resume_micro_cpu_v1",
+  "test_body_seconds": 1.0053113121539354,
+  "tests_run": 49,
+  "visible_cuda_devices": 0
+}

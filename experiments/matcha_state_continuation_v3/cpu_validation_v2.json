@@ -1,0 +1,10 @@
+{
+  "schema": "matcha_v3_cpu_contracts",
+  "tests_run": 35,
+  "failures": 0,
+  "errors": 0,
+  "cuda_initialized": false,
+  "seconds": 1.1567746922373772,
+  "production_data_loaded": false,
+  "only_tiny_cpu_fixtures": true
+}

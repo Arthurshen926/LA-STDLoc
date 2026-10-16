@@ -1,0 +1,34 @@
+{
+  "scenes": {
+    "ShopFacade": {
+      "ply": "/mnt/pool/sqy/anygsloc_three_gpu_20260910/priors/ShopFacade/vanilla_3dgs/native/point_cloud/iteration_30000/point_cloud.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "background": "black"
+    },
+    "OldHospital": {
+      "ply": "/mnt/pool/sqy/anygsloc_three_gpu_20260910/priors/OldHospital/vanilla_3dgs/native/point_cloud/iteration_30000/point_cloud.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "background": "black"
+    },
+    "KingsCollege": {
+      "ply": "/mnt/pool/sqy/anygsloc_three_gpu_20260910/priors/KingsCollege/vanilla_3dgs/native/point_cloud/iteration_30000/point_cloud.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "background": "black"
+    },
+    "GreatCourt": {
+      "ply": "/mnt/pool/sqy/anygsloc_three_gpu_20260910/priors/GreatCourt/vanilla_3dgs/native/point_cloud/iteration_30000/point_cloud.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "background": "black"
+    },
+    "StMarysChurch": {
+      "ply": "/mnt/pool/sqy/anygsloc_three_gpu_20260910/priors/StMarysChurch/vanilla_3dgs/native/point_cloud/iteration_30000/point_cloud.ply",
+      "gaussian_type": "3dgs",
+      "sh_degree": 3,
+      "background": "black"
+    }
+  }
+}

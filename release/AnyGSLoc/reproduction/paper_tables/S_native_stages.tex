@@ -1,0 +1,19 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Native stage measurements within complete runs}
+\label{tab:s_native_stages}
+\begin{tabular}{lcccc}
+\toprule
+Method & Map sem. & Initial segment & Coarse prefix & Dense suffix \\
+\midrule
+STDLoc & off & 372.976 & 372.976 & 210.125 \\
+STDLoc & on & \textbf{343.394} & \textbf{343.394} & \textbf{174.618} \\
+ULF-Loc & off & 519.048 & 558.214 & \textbf{956.983} \\
+ULF-Loc & on & \textbf{507.186} & \textbf{549.349} & 1024.654 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize All entries are mean ms from the matched runs, not independent sparse-only deployment measurements. STDLoc initial segment is its pipeline prefix, including shared fine/coarse feature preparation. ULF-Loc initial segment is native sparse\_only (fresh sparse features, matching, PnP, and GT diagnostics), while coarse prefix also includes dense-feature precomputation. Dense suffix is the total core minus coarse prefix. Query semantic preprocessing is outside native core. No initial-only frame latency is inferred. Bold compares mapping-semantics variants within each method only; the two methods have different internal segment boundaries.\end{minipage}
+\end{table*}

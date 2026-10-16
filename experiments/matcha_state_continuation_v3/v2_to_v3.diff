@@ -1,0 +1,258 @@
+--- /root/STDLoc/experiments/matcha_exact_resume_v2/exact_resume.py
++++ /root/STDLoc/experiments/matcha_state_continuation_v3/exact_resume.py
+@@ -1,6 +1,6 @@
+ """Exact-boundary continuation for the frozen MAtCha recipe.
+ 
+-Candidate engineering extension; GPU equivalence and production use are gated.
++State-exact checkpoint transport only. Native floating trajectory equality is NOT claimed.
+ No tensor arithmetic, RNG draws, scheduler changes, or optimizer steps are added.
+ Only trusted locally produced checkpoint directories may be loaded.
+ """
+@@ -14,6 +14,7 @@
+ import tempfile
+ import time
+ import resource
++import math
+ 
+ import numpy as np
+ import torch
+@@ -86,6 +87,7 @@
+         require(bool(torch.isfinite(data).all()), "nonfinite loss component")
+         return {"dtype": str(data.dtype), "bits": data.view(torch.uint8).numpy().tobytes().hex()}
+     require(isinstance(value, (int, float)), "loss component missing/non-numeric")
++    require(math.isfinite(float(value)), "nonfinite Python loss component")
+     return {"dtype": type(value).__name__, "hex": float(value).hex()}
+ 
+ def loss_components(local, selected_pool):
+@@ -424,25 +426,6 @@
+     for values in state["events"].values():
+         require(values == sorted(set(values)) and all(0 < i <= k for i in values), "event state")
+ 
+-def validate_reference(records, next_iteration, stop_iteration, is_resume, limited_gate=False):
+-    light = {k for (k, full) in records if not full}
+-    full = {k for (k, full) in records if full}
+-    require(bool(light), "empty reference trace")
+-    if limited_gate:
+-        require(next_iteration == 15000 and stop_iteration == 30000, "unique14999 cut/horizon")
+-        require(set(range(15000, 15102)) <= light and {14999, 15101} <= full,
+-                "missing bounded trajectory/endpoint reference")
+-        return
+-    if is_resume:
+-        require(stop_iteration is not None, "comparison branch must declare exact stop")
+-        needed = set(range(next_iteration, stop_iteration + 1))
+-    else:
+-        require(next_iteration == 1 and stop_iteration in (8, 15101), "only registered fresh B endpoint")
+-        project_a_reference.validate_projected_records(records)
+-        return
+-    require(bool(needed) and needed <= light and needed <= full,
+-            "incomplete reference step/digest coverage")
+-
+ def add_arguments(parser):
+     parser.add_argument("--exact_manifest", required=True)
+     parser.add_argument("--exact_dir", required=True)
+@@ -454,6 +437,31 @@
+     parser.add_argument("--exact_continue_gate")
+     parser.add_argument("--exact_reference_terminal")
+     parser.add_argument("--exact_prefix_spec")
++
++
++@diagnostic_only
++def finite_state(value):
++    """Finite screen only; no normalization, mutation or floating tolerance."""
++    if isinstance(value, torch.Tensor):
++        if value.is_floating_point() or value.is_complex():
++            require(bool(torch.isfinite(value).all()), "nonfinite saved tensor")
++    elif isinstance(value, np.ndarray):
++        if np.issubdtype(value.dtype, np.inexact):
++            require(bool(np.isfinite(value).all()), "nonfinite saved array")
++    elif isinstance(value, dict):
++        for item in value.values(): finite_state(item)
++    elif isinstance(value, (list, tuple)):
++        for item in value: finite_state(item)
++    elif isinstance(value, (float, np.floating)):
++        require(math.isfinite(float(value)), "nonfinite saved scalar")
++
++@diagnostic_only
++def finite_terminal_model(model):
++    # Original step30000 leaves gradients; do not call capture_model/zero_grad/step here.
++    finite_state([getattr(model, name) for name in PARAMS.values()])
++    finite_state(model.optimizer.state_dict())
++    finite_state([getattr(model, name) for name in MODEL_FIELDS])
++    finite_state([p.grad for g in model.optimizer.param_groups for p in g["params"]])
+ 
+ class Controller:
+     def __init__(self, args, local):
+@@ -493,64 +501,18 @@
+         self.state = read_atomic(args.exact_resume) if self.has_resume else None
+         self.static = read_atomic(self.state["static_ref"]["path"], self.state["static_ref"]) if self.has_resume else None
+         self.events = {"evaluation": [], "save": [], "native_checkpoint": []}
+-        gate_path = getattr(args, "exact_continue_gate", None)
++        require(not args.exact_windows and not args.exact_reference_trace and
++                not args.exact_continue_gate and not args.exact_reference_terminal and
++                not args.exact_prefix_spec, "v3 has no trajectory comparison or promotion gate")
+         if self.has_resume:
+-            require(args.exact_stop is not None, "resume must declare comparison/training end")
+-            require(args.exact_stop <= 15101 or gate_path is not None,
+-                    "continuation beyond15101 requires reviewed unique14999 automatic gate")
+-        if gate_path:
+-            require(self.has_resume and self.state["completed_iteration"] == 14999 and
+-                    args.exact_stop == 30000 and getattr(args, "exact_reference_trace", None),
+-                    "only14999→15101→30000 continuation is registered")
+-            from continuation_gate import validate_gate, gate_digest
+-            checkpoint_info = json.loads((Path(args.exact_resume) / "manifest.json").read_text())
+-            self.gate_contract = validate_gate(json.loads(Path(gate_path).read_text()),
+-                file_sha(args.exact_manifest), file_sha(args.exact_reference_trace), checkpoint_info["sha256"])
+-            review_path = Path(self.gate_contract["source_review_path"])
+-            require(file_sha(review_path) == self.gate_contract["source_review_sha256"], "gate review changed")
+-            gate_review = json.loads(review_path.read_text())
+-            require(gate_review["schema"] == "matcha14999_gate_review_v1" and gate_review["verdict"] == "PASS" and
+-                    gate_review["binding_sha256"] == self.gate_contract["binding_sha256"] and
+-                    gate_review["reference_trace_sha256"] == self.gate_contract["reference_trace_sha256"] and
+-                    gate_review["gate_body_sha256"] == gate_digest(self.gate_contract),
+-                    "automatic continuation review missing/stale")
+-            require(getattr(args, "exact_reference_terminal", None), "missing15101 terminal evidence")
+-            terminal = Path(args.exact_reference_terminal)
+-            terminal_info = json.loads((terminal / "manifest.json").read_text())
+-            require(terminal_info["sha256"] == self.gate_contract["checkpoint15101_sha256"] and
+-                    file_sha(terminal / "state.pt") == terminal_info["sha256"], "15101 evidence changed")
+-            require(os.environ.get("CUDA_VISIBLE_DEVICES") == self.gate_contract["budget"]["uuid"],
+-                    "continuation GPU differs from approved measured budget")
+-        self.windows = []
+-        for s in args.exact_windows:
+-            a, b = map(int, s.split(":"))
+-            require(1 <= a <= b <= 30000, "invalid comparison window")
+-            self.windows.append((a, b))
+-        self.reference = {}
+-        reference_path = getattr(args, "exact_reference_trace", None)
+-        if reference_path:
+-            require(str(Path(reference_path).resolve()) in manifest["files"], "unbound comparison reference")
+-            for line in Path(reference_path).read_text().splitlines():
+-                record = json.loads(line)
+-                key = (record["iteration"], "exact_digest" in record)
+-                require(key not in self.reference, "duplicate reference trace step")
+-                self.reference[key] = record
+-            validate_reference(self.reference, self.state["next_iteration"] if self.has_resume else 1,
+-                               args.exact_stop, self.has_resume, self.gate_contract is not None)
+-            if self.gate_contract is not None:
+-                from continuation_gate import ComparisonGate
+-                self.gate = ComparisonGate(self.reference)
+-        prefix_spec = getattr(args, "exact_prefix_spec", None)
+-        if prefix_spec:
+-            require(not self.has_resume and args.exact_stop == 15101 and
+-                    args.exact_save == [8, 14999, 15101] and not args.exact_windows and self.reference,
+-                    "only fresh B8 conditional15101 is registered")
+-            from native_b_prefix_launcher import load_controller_spec
+-            from prefix_gate import PrefixGate
+-            self.prefix_spec, self.prefix_owner = load_controller_spec(prefix_spec, args.exact_manifest, self.root.parent)
+-            self.prefix_gate = PrefixGate(self.reference, self.prefix_spec["promotion_policy"])
+-        elif not self.has_resume and self.reference and args.exact_stop == 15101:
+-            raise RuntimeError("exact-resume: fresh15101 reference requires measured B8 promotion gate")
++            require(self.state["completed_iteration"] == 14999 and self.state["next_iteration"] == 15000 and
++                    args.exact_stop == 30000 and args.exact_save == [], "only14999->30000 resume")
++        else:
++            require(args.exact_stop == 14999 and args.exact_save == [14999], "only fresh1->14999")
++        self.windows, self.reference = [], {}
++        self.next_expected = 15000 if self.has_resume else 1
++        self.restore_verified = not self.has_resume
++        self.in_step = False
+         self.trace = (self.root / ("trace_from_%d.jsonl" %
+                       (self.state["next_iteration"] if self.has_resume else 1))).open("x")
+         self.performance = (self.root / "performance.jsonl").open("x")
+@@ -558,15 +520,7 @@
+             validate_checkpoint(self.state, self.binding, self.static)
+ 
+     def check_reference(self, record, key):
+-        if key in self.reference and record != self.reference[key]:
+-            path = self.root / "first_difference.json"
+-            if not path.exists():
+-                with path.open("x") as f:
+-                    json.dump({"iteration": key[0], "kind": "full_state" if key[1] else "trajectory",
+-                               "expected": self.reference[key], "actual": record}, f, sort_keys=True)
+-                    f.flush()
+-                    os.fsync(f.fileno())
+-            raise RuntimeError("exact-resume: first comparison difference at step " + str(key[0]))
++        require(not self.reference, "trajectory reference forbidden in v3")
+ 
+     def metric(self, value):
+         value["diagnostic_phases"] = drain_records()
+@@ -640,12 +594,22 @@
+             self.check_reference({"iteration": 14999, "exact_digest": digest}, (14999, True))
+             self.gate.restored_boundary(digest)
+         require(equal(before, rng_state()), "restored verification consumed RNG")
++        self.restore_verified = True
++        proof = {"schema": "matcha_state_restore_proof_v3", "verdict": "PASS",
++                 "completed_iteration": 14999, "next_iteration": 15000,
++                 "saved_full_digest": self.restored_expected_digest, "restored_full_digest": digest,
++                 "static_digest": cache_digest, "all_state_bitwise": True,
++                 "floating_trajectory_equivalence_claimed": False}
++        with (self.root / "restore_bitwise_PASS.json").open("x") as f:
++            json.dump(proof, f, sort_keys=True); f.flush(); os.fsync(f.fileno())
+ 
+     def before_step(self, iteration):
+-        if self.prefix_gate is not None:
+-            self.prefix_gate.before_step(iteration)
+-        if self.gate is not None:
+-            self.gate.before_step(iteration)
++        require(self.restore_verified and not self.in_step and iteration == self.next_expected,
++                "unverified restore, skipped or repeated step")
++        require(torch.get_num_threads() == self.binding["runtime"]["threads"] and
++                torch.get_num_interop_threads() == self.binding["runtime"]["interop"],
++                "diagnostic thread settings leaked into training")
++        self.in_step = True
+ 
+     def observe_view(self, local):
+         self.selection = {"pool": "chart" if local["iteration"] %
+@@ -656,6 +620,7 @@
+ 
+     def boundary(self, local):
+         k = local["iteration"]
++        require(self.in_step and k == self.next_expected, "boundary order")
+         for name, key in (("evaluation", "testing_iterations"), ("save", "saving_iterations"),
+                           ("native_checkpoint", "checkpoint_iterations")):
+             if k in local[key]:
+@@ -694,6 +659,7 @@
+                      "pipeline": copy.deepcopy(vars(local["pipe"])),
+                      "scheduler_next": next_lrs(local["gaussians"], k + 1)}
+             validate_checkpoint(state, self.binding, self.static)
++            finite_state((model, optimizer, state["loop"]))
+             comparison = {key: state[key] for key in COMPARISON_FIELDS}
+             digest_record = {"iteration": k, "exact_digest": diagnostic_digest(comparison)}
+             self.check_reference(digest_record, (k, True))
+@@ -712,33 +678,11 @@
+                          "capture_hash_seconds": capture_seconds, "publication_seconds": save_seconds,
+                          "checkpoint_file_bytes": disk_bytes})
+             require(equal(before, rng_state()), "checkpoint capture consumed RNG")
+-        if self.prefix_gate is not None and k <= 8:
+-            self.prefix_gate.observe(record, digest_record["exact_digest"] if digest_record else None)
+-            if k == 8:
+-                proof = {"spec_sha256": file_sha(self.args.exact_prefix_spec),
+-                         "binding_sha256": file_sha(self.args.exact_manifest),
+-                         "reference_trace_sha256": file_sha(self.args.exact_reference_trace),
+-                         "checkpoint8_manifest_sha256": file_sha(self.root / "step_00008/manifest.json"),
+-                         "full8_digest": digest_record["exact_digest"]}
+-                passed = self.prefix_gate.decide(time.monotonic() - self.prefix_owner["started_monotonic"],
+-                    capture_seconds, save_seconds, self.root / "B8_conditional_prefix_gate.json", proof)
+-                if not passed:
+-                    self.metric({"event": "stop", "iteration": 8, "reason": "measured_budget_gate"})
+-                    self.trace.close()
+-                    self.performance.close()
+-                    return True
+-        if self.gate is not None and k <= 15101:
+-            self.gate.observe(k, record, digest_record["exact_digest"] if digest_record else None)
+-            if k == 15101:
+-                require(self.gate.passed, "15101 automatic gate did not pass")
+-                with (self.root / "comparison_14999_15101_PASS.json").open("x") as f:
+-                    json.dump({"schema": "matcha14999_comparison_v1", "verdict": "PASS",
+-                        "comparison_end": 15101, "training_end": 30000,
+-                        "full_state_steps": [14999, 15101], "trajectory_steps": [15000, 15101],
+-                        "gate": self.gate_contract}, f, sort_keys=True)
+-                    f.flush()
+-                    os.fsync(f.fileno())
++        self.in_step = False
++        self.next_expected = k + 1
+         if k == self.args.exact_stop:
++            if k == 30000:
++                finite_terminal_model(local["gaussians"])
+             self.metric({"event": "stop", "iteration": k})
+             self.trace.close()
+             self.performance.close()

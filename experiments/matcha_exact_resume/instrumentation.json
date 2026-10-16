@@ -1,0 +1,13 @@
+{
+  "schema": "matcha_exact_instrumentation_v1",
+  "source": "/root/MAtCha/2d-gaussian-splatting/train_with_charts.py",
+  "source_sha256": "5c5c7d924675dc3ad743208b3e2ca35d3d064f30892338845ff2c08a30b3a630",
+  "generated": "/root/STDLoc/experiments/matcha_exact_resume/train_with_charts_exact.py",
+  "generated_sha256": "92e6fb0cf01af2a1b729f6ffa523eea43d0adb15f09267d10ba915a493f49f43",
+  "native_boundary": "after original lines 1943-1958; before original 1960 GUI block",
+  "native_terminal": "30000 skips optimizer.step; terminal cannot be resumed",
+  "replacement_count": 12,
+  "gpu_executed": false,
+  "state_schema": "matcha_exact_resume_v2",
+  "support": "registered cut14999 only"
+}

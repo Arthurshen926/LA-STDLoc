@@ -1,0 +1,192 @@
+{
+  "base_files": {
+    "anygsloc/__init__.py": {
+      "sha256": "335c879cb6967b69573765b7601eee51b360478a0c1cb9ae5f72bcb895c399b4"
+    },
+    "anygsloc/config.py": {
+      "sha256": "0f65b69bd19cac4c16cae9b82ff454e9b4dadb67edbf872d41b6c7f373174601"
+    },
+    "anygsloc/cli.py": {
+      "sha256": "c9176e1f30df00bd837cbe57ff8e5b73a84ccdcd75d8fdda2e4bf27580313efb"
+    },
+    "anygsloc/__main__.py": {
+      "sha256": "e39261a231afa15887a852af980a108e460863df9a55370bedb029e6062be061"
+    },
+    "anygsloc/artifacts.py": {
+      "sha256": "dacd6146d19c1a47a3d0a11df1a80e0e17db6195a64ad8eea25542381c197a46"
+    },
+    "anygsloc/features/extractor.py": {
+      "sha256": "c970b462f912221e83fd082f57976da9615ffab188acb05edf9c7addd72f54b7"
+    },
+    "anygsloc/features/raster_sampling.py": {
+      "sha256": "76af137f0de4aa19f99a483ef58ba6152141691238d354855f5fdd20d5271a6b"
+    },
+    "anygsloc/features/__init__.py": {
+      "sha256": "de98a0b1eaf5bfd8b4b37087b69bf92e612661e5067b9d7f6a1b2b66613112de"
+    },
+    "anygsloc/features/multiview_fusion.py": {
+      "sha256": "d2d7c451113b89f08f44dfec302164d0f6f0932c1b32a34d39dd9f258529713f"
+    },
+    "anygsloc/features/superpoint.py": {
+      "sha256": "c42d15aec965d8c8ab87609f495083c7eb29dc64d1310786498b8d7ed3732afa"
+    },
+    "anygsloc/priors/__init__.py": {
+      "sha256": "de98a0b1eaf5bfd8b4b37087b69bf92e612661e5067b9d7f6a1b2b66613112de"
+    },
+    "anygsloc/priors/rendering.py": {
+      "sha256": "8a614ec3933fcbbbc5717999cc6185cbb24016da453add481b3a2b0121657455"
+    },
+    "anygsloc/priors/models.py": {
+      "sha256": "23ef10e1772bd975596da0b888de2f2df34c7dd5362b8f8625f989a48fcbab86"
+    },
+    "anygsloc/priors/mapping_supersampling.py": {
+      "sha256": "45c606048f0333eff01b219f384a6c1ef6ea6abe72110c49bb6d26a5a953f96b"
+    },
+    "anygsloc/utils/__init__.py": {
+      "sha256": "de98a0b1eaf5bfd8b4b37087b69bf92e612661e5067b9d7f6a1b2b66613112de"
+    },
+    "anygsloc/utils/hashing.py": {
+      "sha256": "ddeb85324123b82f6e05ec9aefe5bf11dfb5ed7505f68dcf9436fe3bfa3ebbd5"
+    },
+    "anygsloc/evaluation/__init__.py": {
+      "sha256": "de98a0b1eaf5bfd8b4b37087b69bf92e612661e5067b9d7f6a1b2b66613112de"
+    },
+    "anygsloc/evaluation/runner.py": {
+      "sha256": "a5ff06b7438288d83dad3d849d61b4c0d355871426d31060f3262b6edb800c18"
+    },
+    "anygsloc/evaluation/metrics.py": {
+      "sha256": "abca7771670c0bc5d7f793c2dbf81d8da479d58a52ee1f6618e12cea58ef6758"
+    },
+    "anygsloc/mapping/build.py": {
+      "sha256": "e71c95cc65190313efaeb3daf55a36d47da3b3b64f9fb2d8dff195b8f4892acb"
+    },
+    "anygsloc/mapping/projective_reconstruction.py": {
+      "sha256": "4179f8cf94c3ec3d27a873cb4a36f3944f7dced33c245966f1bc160a33ac0edd"
+    },
+    "anygsloc/mapping/virtual_camera_registry.py": {
+      "sha256": "3811e082a934efe321a7543f16273b726330aa8b4055645a20cda77c33c26535"
+    },
+    "anygsloc/mapping/__init__.py": {
+      "sha256": "dd518be3bc21f275f2006710ab07f3d0a9acaaa742ed79d75b8c769f3b268d2e"
+    },
+    "anygsloc/mapping/projective_completion.py": {
+      "sha256": "872b74442657faf816da25082ace4a82f328e41031bb7b661a7106a5dba7d80d"
+    },
+    "anygsloc/mapping/triangulation.py": {
+      "sha256": "4b24a23c7063a72e5602b32f58285357316cc09030b8b6aff7f7af20b63daa92"
+    },
+    "anygsloc/mapping/contracts.py": {
+      "sha256": "995a96fbcd7d1addd52a4fef8ee9d2a9bf246a2b35e6a698ca12ad917b29cb65"
+    },
+    "anygsloc/mapping/post_pose_cleanup.py": {
+      "sha256": "d0bc98309884388a6fcfb89a791b866d10da0d7ed81424b138da82db807bd9b1"
+    },
+    "anygsloc/mapping/anchor_map.py": {
+      "sha256": "ca448929d67fa0ae5f75ea8ed1cc77031248018ff982c194e7fdf8aa00c06cc1"
+    },
+    "anygsloc/mapping/v2_filtered_observations.py": {
+      "sha256": "4d013a0c7a42510cfc54de51527c1709f051f321e1877246685e87705610701c"
+    },
+    "anygsloc/mapping/cycle_core_reserve.py": {
+      "sha256": "0f2786981d7f502c39a4e70ee9e3817ad4b3e04d1bfae403a844926e42c433b1"
+    },
+    "anygsloc/mapping/camera_pair_policy.py": {
+      "sha256": "1b8c165e9d23c0b7948a00eb16620632a3fa3531bbba0ecff1023d2698f81ee8"
+    },
+    "anygsloc/mapping/materialize.py": {
+      "sha256": "68556a316deb3a65ce3c05d82ec80b189d779fd76510d89ab8d1140fc51a669b"
+    },
+    "anygsloc/mapping/selector.py": {
+      "sha256": "1686554682ac0e3c0b4fb4fdbe01897323d271deb5bf63b2412a07e08078621a"
+    },
+    "anygsloc/mapping/compact.py": {
+      "sha256": "c15d7961e9564a354a716874342ab678ca1f18ebd5042aacf238acc98bc4152f"
+    },
+    "anygsloc/mapping/parallax_stratified_pair_policy.py": {
+      "sha256": "f8e95073972947622e2b2ef4ec934821d0c10f46d5ba1fcb8e95caf930f1cc6a"
+    },
+    "anygsloc/mapping/coverage.py": {
+      "sha256": "eb963a94424513a99de309116912e942928ba5daec5e1bcc0f1b5d431b14f843"
+    },
+    "anygsloc/mapping/compact_v2.py": {
+      "sha256": "5865cc0bf483b6c8d5905bc2581593492de5fa16bd31950f7acdc6fd94751948"
+    },
+    "anygsloc/mapping/projective_association.py": {
+      "sha256": "91f8316ba76f1da6028c474e26266e4d175e257b8588d21d47ac60403074c1d5"
+    },
+    "anygsloc/mapping/tracks.py": {
+      "sha256": "e795c4b9b408726e8f3e05c4f8cea7d4ba31f074dbfdc7629652d8c88f209d41"
+    },
+    "anygsloc/mapping/subset.py": {
+      "sha256": "3275e8ca53c76e613da9adfe596626af6b6323acb86855e8f7676fcee2d50ab0"
+    },
+    "anygsloc/mapping/audit_render.py": {
+      "sha256": "942d5946906d7533756a9c355aa731e91702f7adab6072bd284c8be00124481e"
+    },
+    "anygsloc/mapping/render_observations.py": {
+      "sha256": "e8bf19ce598d873e87c33d3d25e2598b39bccc7a65d62afec4b2c5cba8b71fd3"
+    },
+    "anygsloc/mapping/parallel_triangulation.py": {
+      "sha256": "addbe779b5429c5340a92cca4e913286ab908d921f5ba91bff120086fc822e2e"
+    },
+    "anygsloc/mapping/pose_information.py": {
+      "sha256": "a585c35a1e301e3cf645a547750fd907fb669a013411d3ed95cc89f52e1fa96d"
+    },
+    "anygsloc/mapping/render_input_contract.py": {
+      "sha256": "f36e55ed0da4dc204a99d4763d2fa7b60bb88ff644cf9b25dbbf446211feecf9"
+    },
+    "anygsloc/mapping/render_certificate.py": {
+      "sha256": "10bfaca7edf38d05d45706a5d3913fdd27469012145b7b9bdacb7c1ff42e088b"
+    },
+    "anygsloc/mapping/observability.py": {
+      "sha256": "20d5ba483664a35386fa9411aa80402d10a2d78aee7a44e3e9ba818278f6a8b2"
+    },
+    "anygsloc/mapping/observation_provider.py": {
+      "sha256": "8c1556bb2322866221fcb4b40f04bb6530983f739b4272cebb0e1b130fb9e936"
+    },
+    "anygsloc/mapping/pose_evidence.py": {
+      "sha256": "81756af50916220792c2cf6366e7a557358f8200e371c015f108a8ed196d95ff"
+    },
+    "anygsloc/mapping/view_support.py": {
+      "sha256": "57420ae08e14d6202a345c193518f9fb1b895e02eaa565acd8cc71d9f1cfa067"
+    },
+    "anygsloc/mapping/identity.py": {
+      "sha256": "52b7b63ddccf2cbe2c9755ce2fb86d25bfdf09090faeb0d8060901e96e79ca47"
+    },
+    "anygsloc/online/matching.py": {
+      "sha256": "88a3cf65486d656d8e722e80ddc60434647129cd714d72cb43e5f59b11b36ab3"
+    },
+    "anygsloc/online/runtime.py": {
+      "sha256": "8e9e4aa0825d834665f4dcc47d4b1f2dd2d028ac5c9162fd5b89d41d0d94719e"
+    },
+    "anygsloc/online/__init__.py": {
+      "sha256": "e2adf6a49b80f0a578f2590096b28ad21572651c13204b8b09a9ff918c8d6725"
+    },
+    "anygsloc/online/pose.py": {
+      "sha256": "c6db573d2d4e184c010310859352ce1c5299706bb2ca3702bbbb6b02eae2c41a"
+    },
+    "anygsloc/data/calibration.py": {
+      "sha256": "a6b0a5cba91a3f55e5efbf065a482d8410cdfe8b2e2ebfda5621b9b1565a4b72"
+    },
+    "anygsloc/data/colmap.py": {
+      "sha256": "5925d8db3064b300b14f276841d3a70465a23c2a6269a14ed0e9d4d9a751356e"
+    },
+    "anygsloc/data/__init__.py": {
+      "sha256": "de98a0b1eaf5bfd8b4b37087b69bf92e612661e5067b9d7f6a1b2b66613112de"
+    },
+    "anygsloc/data/geometric_validity.py": {
+      "sha256": "c5db0a75e322a9d66384603aea58141054a9859b9d31525a42d9b0ad69c4e1a0"
+    },
+    "anygsloc/data/datasets.py": {
+      "sha256": "8940b768c819a54ad2f68b7efd56858d0d92261af5161ef642070b3fa3086a7e"
+    }
+  },
+  "ported_from": [
+    "experiments/cambridge_input_matrix/driver.py",
+    "experiments/cambridge_mainline_inputs/adapter.py",
+    "experiments/cambridge_mainline_ablations/t5.py",
+    "experiments/cambridge_mainline_ablations/t6.py",
+    "experiments/cambridge_mainline_ablations/t7.py"
+  ],
+  "note": "Source snapshot before release-only consolidation. Original experiment tree is unchanged."
+}

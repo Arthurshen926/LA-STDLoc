@@ -1,0 +1,18 @@
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{1.3pt}
+\renewcommand{\arraystretch}{1.15}
+\caption{Filtering and fusion on Compact maps}\label{tab:t6}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}ccccccc@{}}
+\toprule
+Filter & Fusion & \shortstack{Map\\points} & \shortstack{Med. TE/RE\\(cm/deg)} & \shortstack{Mean TE/RE\\(cm/deg)} & \shortstack{P95 TE\\(cm)} & R5 (\%) \\
+\midrule
+$\times$ & $\times$ & 116,020 & 8.792/0.124 & 20.438/0.267 & 55.759 & 41.51 \\
+$\checkmark$ & $\times$ & 121,379 & 8.883/0.124 & \textbf{19.178}/\underline{0.258} & 54.814 & 41.59 \\
+$\times$ & $\checkmark$ & 116,020 & \textbf{8.533}/\underline{0.122} & 21.244/0.283 & \underline{50.038} & \textbf{44.33} \\
+$\checkmark$ & $\checkmark$ & 121,379 & \underline{8.537}/\textbf{0.121} & \underline{19.740}/\textbf{0.238} & \textbf{45.691} & \underline{44.25} \\
+\bottomrule
+\end{tabular*}
+\tabnote{Within each filtering condition, fusion changes only descriptors; selected IDs and coordinates are identical. Single descriptors use fixed lexicographic order. Map sizes follow the same adaptive selector. Bold/underline: best/second-best among the four configurations.}
+\end{table}

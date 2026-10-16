@@ -1,0 +1,22 @@
+\begin{table*}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.15}
+\caption{Local accuracy and deployment cost on Cambridge}\label{tab:t4}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lllcccccc@{}}
+\toprule
+Method & Stage & Stage map & \shortstack{Mapping\\semantics} & \shortstack{Median TE/RE\\(cm/deg)} & \shortstack{Mean TE/RE\\(cm/deg)} & \shortstack{R5 (\%)\\(5\,cm/$5^\circ$)} & \shortstack{Map size\\(MB)} & \shortstack{Localization\\time (ms)} \\
+\midrule
+\multirow{2}{*}{STDLoc} & Initial & \multirow{2}{*}{Feature Gaussians} & $\checkmark$ & 11.225/0.193 & 75.060/1.078 & 25.93 & \multirow{2}{*}{2251.31} & 343.39 \\
+ & Refined &  & $\checkmark$ & 8.884/0.137 & 311.154/1.384 & 37.43 &  & 518.01 \\
+\midrule
+\multirow{2}{*}{ULF-Loc} & Initial & Landmarks & $\checkmark$ & 12.191/0.199 & 174.099/2.638 & 21.78 & \multirow{2}{*}{\underline{519.65}} & 549.35 \\
+ & Refined & RGB Gaussians & $\checkmark$ & \underline{8.375}/0.133 & 150.339/2.415 & 40.22 &  & 1574.00 \\
+\midrule
+\multirow{2}{*}{AnyGSLoc} & Single & Full landmarks & $\times$ & \textbf{7.817}/\textbf{0.117} & \underline{21.124}/\textbf{0.236} & \textbf{46.95} & 585.69 & \underline{77.22} \\
+ & Single & Compact landmarks & $\times$ & 8.537/\underline{0.121} & \textbf{19.740}/\underline{0.238} & \underline{44.25} & \textbf{126.73} & \textbf{74.19} \\
+\bottomrule
+\end{tabular*}
+\tabnote{Stage map identifies the representation used at that stage; mapping semantics concerns map construction only. Map size counts complete deployment assets, shared by initial/refined outputs. Initial time is cumulative within the complete pipeline. Accuracy uses all 1,918 queries and scene-equal aggregation. Bold/underline: best/second-best.}
+\end{table*}

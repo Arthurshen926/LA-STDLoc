@@ -1,0 +1,16 @@
+\par\medskip
+\noindent\begin{minipage}{\linewidth}
+\refstepcounter{anygsalgorithm}\label{alg:selection}
+\hrule\smallskip
+\textbf{Algorithm \theanygsalgorithm. Localization-aware landmark selection}
+\smallskip\hrule\smallskip
+\small
+\textbf{Input:} Candidate bank $\mathcal A$, target support $b$, and selection settings.\\[2pt]
+\textbf{1. Quality pruning.} Retain a quality-ranked prefix in $S$ until the core stopping criterion is met.\\[2pt]
+\textbf{2. Coverage completion.} While feasible deficits remain, add the candidate with largest positive marginal gain in $F_{\rm cov}$. Record these additions as $\mathcal U_{\rm cov}$.\\[2pt]
+\textbf{3. Pose-aware completion.} Add admissible candidates using refreshed $G_i(S)$, updating the information matrices and occupied categories until a stopping criterion is met.\\[2pt]
+\hspace*{1em}\emph{Final cleanup:} Freeze $\tau_m=\min\{b,r_m(S)\}$. Visit $\mathcal U_{\rm cov}$ in increasing quality; remove a point only if all affected views retain $\tau_m$.\\[2pt]
+\textbf{Output:} $\mathcal M_S=\{(X_i,d_i):i\in S\}$.
+\smallskip\hrule
+\end{minipage}
+\par\medskip

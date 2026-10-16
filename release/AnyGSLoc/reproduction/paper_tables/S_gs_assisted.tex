@@ -1,0 +1,17 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{GS-assisted geometry proposals with real-only descriptors}
+\label{tab:s_gs_assisted}
+\begin{tabular}{lccccccc}
+\toprule
+Map & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & R5 (\%) & R15 (\%) & Landmarks & Map (MB) \\
+\midrule
+Full & \textbf{7.249} / 0.124 & \textbf{13.712} & 29.588 & \textbf{43.94} & \textbf{78.33} & 527,027 & 550.23 \\
+Compact & 7.706 / \textbf{0.123} & 14.383 & \textbf{29.333} & 42.31 & 76.37 & 342,978 & \textbf{358.08} \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize All descriptors come from real images; GS supplies only geometry proposals and final coordinates still use multiview rays. The strict append-only Full experiment adds seven landmarks; Compact may naturally reselect. Median TE, R5, R15, and P90 are unchanged from real-only. Accuracy P95 is not reported. TE statistics are in cm; storage is summed over five scenes. Bold compares the two deployment variants; landmark count is not ranked.\end{minipage}
+\end{table*}

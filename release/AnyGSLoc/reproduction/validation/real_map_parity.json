@@ -1,0 +1,13 @@
+{
+  "scene": "ShopFacade",
+  "full_landmarks": 25953,
+  "compact_landmarks": 12014,
+  "checks": {
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "compact_anchor_xyz": true,
+    "compact_anchor_features": true
+  },
+  "seconds": 260.0334490425885,
+  "status": "passed"
+}

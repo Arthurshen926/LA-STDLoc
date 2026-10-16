@@ -1,0 +1,6 @@
+claim,evidence,supported_conclusion,scope
+Track-defined geometry,"Fig1, Fig3, T5, E2",8.771 cm vs 11.723 center / 9.922 depth,T5 uses shared estimation observations; E2 mapping diagnostic is separate.
+Rendering-aware feature construction,"Fig3, T6",Complete configuration has lowest mean TE/highest R5,Single-observation descriptor control; not a direct comparison against every averaging rule.
+Compact localization map,"Fig4, E3, T7, S1","67.3% fewer landmarks, similar median TE",Track-length stronger on mean TE/R15; full map higher R15.
+Single-stage online localization,"Fig2, E1, E5, T4",66.18 ms and 183.07 MB with competitive accuracy,Native system settings; not isolated rendering speedup or hard real-time guarantee.
+Multiple Gaussian inputs,"E4, T8",Seven prior configurations,Compatibility depends on quality; reference PSNR is not novel-view/test PSNR.

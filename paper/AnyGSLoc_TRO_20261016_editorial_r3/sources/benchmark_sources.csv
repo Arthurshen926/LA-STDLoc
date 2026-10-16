@@ -1,0 +1,67 @@
+﻿dataset,method,category,source,source_role,source_reference,available_scene_entries,mean_scene_count
+Cambridge,AS (SIFT),FM,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,47,5,5
+Cambridge,HLoc (SP+SG),FM,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,43,5,5
+Cambridge,PixLoc,FM,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,45,5,5
+Cambridge,DFNet,APR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,11,4,4
+Cambridge,LENS,APR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,35,4,4
+Cambridge,PMNet,APR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,27,4,4
+Cambridge,DSAC*,SCR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,5,5,5
+Cambridge,ACE (Poker),SCR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,3,5,5
+Cambridge,NeuMap,SCR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,56,5,5
+Cambridge,GLACE,SCR,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,60,5,5
+Cambridge,CROSSFIRE,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,34,4,4
+Cambridge,DFNet+NeFeS50,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,9,4,4
+Cambridge,HR-APR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,29,4,4
+Cambridge,NeRFMatch,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,69,5,5
+Cambridge,MCLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,58,4,4
+Cambridge,GSplatLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,53,4,4
+Cambridge,GSFFs-PR Feature,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,38,4,4
+Cambridge,STDLoc,NeRF/GS,https://arxiv.org/html/2503.19358v1#S4.T2,STDLoc original method row,,5,5
+Cambridge,ACE+GS-CPR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,28,4,4
+Cambridge,ULF-Loc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S4.T4,Reported in the ULF-Loc comparison table,,5,5
+Cambridge,PNeRFLoc,NeRF/GS,https://arxiv.org/html/2503.19358v1#S4.T2,Reported in the STDLoc comparison table,68,5,5
+Cambridge,SplitGS-Loc,NeRF/GS,https://arxiv.org/html/2605.07351v1#S4.T1,Original method row,,5,5
+Cambridge,GSVisLoc,NeRF/GS,https://arxiv.org/html/2508.18242v1#S3.T2,Original method row; four Cambridge scenes,,4,4
+Cambridge,AnyGSLoc,Ours,Local primary 24-scene records,Our evaluation,,5,5
+7Scenes,AS (SIFT),FM,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,47,7,7
+7Scenes,HLoc (SP+SG),FM,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,43,7,7
+7Scenes,DVLAD+R2D2,FM,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,57,7,7
+7Scenes,DFNet,APR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,11,7,7
+7Scenes,PMNet,APR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,27,7,7
+7Scenes,Marepo,APR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,10,7,7
+7Scenes,DSAC*,SCR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,5,7,7
+7Scenes,ACE,SCR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,3,7,7
+7Scenes,NeuMap,SCR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,56,7,7
+7Scenes,GLACE,SCR,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,60,7,7
+7Scenes,NBE+SLD,SCR,https://arxiv.org/html/2503.19358v1#S4.T1,Reported in the STDLoc comparison table,15,7,7
+7Scenes,DFNet+NeFeS50,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,9,7,7
+7Scenes,HR-APR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,29,7,7
+7Scenes,PNeRFLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,68,7,7
+7Scenes,NeRFMatch,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,69,7,7
+7Scenes,MCLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,58,7,7
+7Scenes,GSplatLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,53,7,7
+7Scenes,GSFFs-PR Feature,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,38,7,7
+7Scenes,STDLoc,NeRF/GS,https://arxiv.org/html/2503.19358v1#S4.T1,STDLoc original method row,,7,7
+7Scenes,ACE+GS-CPR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,28,7,7
+7Scenes,ULF-Loc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1,Reported in the ULF-Loc comparison table,,7,7
+7Scenes,CROSSFIRE,NeRF/GS,https://arxiv.org/html/2503.19358v1#S4.T1,Reported in the STDLoc comparison table,37,7,7
+7Scenes,SplitGS-Loc,NeRF/GS,https://arxiv.org/html/2605.07351v1#S4.T2,Original method row,,7,7
+7Scenes,SplitGS-Loc+,NeRF/GS,https://arxiv.org/html/2605.07351v1#S4.T2,Original method row,,7,7
+7Scenes,GSVisLoc,NeRF/GS,https://arxiv.org/html/2508.18242v1#S3.T1,Original method row,,7,7
+7Scenes,AnyGSLoc,Ours,Local primary 24-scene records,Our evaluation,,7,7
+12Scenes,Marepo,APR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,10,12,12
+12Scenes,SCRNet,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,26,12,12
+12Scenes,SCRNet-ID,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,36,12,12
+12Scenes,DSAC*,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,5,0,12
+12Scenes,ACE,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,3,12,12
+12Scenes,GLACE,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,60,12,12
+12Scenes,NeRF-SCR,SCR,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,8,12,12
+12Scenes,PNeRFLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,68,11,11
+12Scenes,SplatLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,67,12,12
+12Scenes,GSplatLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,53,12,12
+12Scenes,GSFFs-PR Feature,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,38,12,12
+12Scenes,Marepo+GS-CPR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,28,12,12
+12Scenes,ACE+GS-CPR,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,28,12,12
+12Scenes,STDLoc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,18,12,12
+12Scenes,ULF-Loc,NeRF/GS,https://arxiv.org/html/2605.04730v1#S3.T1a,Reported in the ULF-Loc comparison table,,12,12
+12Scenes,AnyGSLoc,Ours,Local primary 24-scene records,Our evaluation,,12,12

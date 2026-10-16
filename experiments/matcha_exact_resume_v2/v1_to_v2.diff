@@ -1,0 +1,313 @@
+--- v1/exact_resume.py
++++ v2/exact_resume.py
+@@ -17,6 +17,9 @@
+ 
+ import numpy as np
+ import torch
++import diagnostic_cpu
++import project_a_reference
++from diagnostic_cpu import diagnostic_only, drain_records
+ 
+ SCHEMA = "matcha_exact_resume_v2"
+ PHASE = "after_optimizer_and_zero_grad"
+@@ -45,7 +48,7 @@
+                  "camera_center", "focal_x", "focal_y")
+ CONTROL_ARGS = {"exact_manifest", "exact_dir", "exact_resume", "exact_stop",
+                 "exact_save", "exact_windows", "exact_reference_trace", "exact_continue_gate",
+-                "exact_reference_terminal", "model_path", "quiet", "port"}
++                "exact_reference_terminal", "exact_prefix_spec", "model_path", "quiet", "port"}
+ # Output path/quiet/GUI-port are recorded separately; all science args compare.
+ REQUIRED_TOP = {"schema", "phase", "completed_iteration", "next_iteration",
+                 "binding", "static_ref", "model", "optimizer", "loop", "rng",
+@@ -53,6 +56,7 @@
+ 
+ COMPARISON_FIELDS = ("model", "optimizer", "loop", "rng", "events", "pipeline",
+                      "scheduler_next", "static_digest")
++@diagnostic_only
+ def snapshot_static(local):
+     static = {k: pack(local[k]) for k in STATIC_FIELDS}
+     static["chart_cameras"] = [{k: pack(getattr(c, k)) for k in CAMERA_FIELDS}
+@@ -210,6 +214,14 @@
+     visit(value)
+     return h.hexdigest()
+ 
++@diagnostic_only
++def diagnostic_digest(value):
++    return semantic_digest(value)
++
++@diagnostic_only
++def diagnostic_equal(a, b):
++    return equal(a, b)
++
+ def next_lrs(model, iteration):
+     result = {g["name"]: g["lr"] for g in model.optimizer.param_groups}
+     if model.non_position_lr_decay_from >= 0:
+@@ -241,6 +253,7 @@
+     if state["cuda_all"]:
+         torch.cuda.set_rng_state_all(state["cuda_all"])
+ 
++@diagnostic_only
+ def atomic_save(path, payload):
+     """Atomic directory publication; state and JSON checksums verified before rename."""
+     path = Path(path)
+@@ -275,6 +288,7 @@
+         # Unpublished partial directories are deliberately retained for diagnosis.
+         raise
+ 
++@diagnostic_only
+ def read_atomic(path, expected_ref=None):
+     path = Path(path)
+     require(path.is_dir() and not path.is_symlink(), "checkpoint directory missing")
+@@ -300,6 +314,7 @@
+     require(result == list(PARAMS.items()), "optimizer group order")
+     return result
+ 
++@diagnostic_only
+ def capture_model(model):
+     binding = bindings(model)
+     require(model.use_mip_filter and hasattr(model, "mip_filter"), "missing actual mip filter")
+@@ -360,7 +375,7 @@
+     model.optimizer.load_state_dict(unpack(optimizer))
+     require(bindings(model) == state["bindings"], "restored optimizer binding")
+     actual, actual_optimizer = capture_model(model)
+-    require(equal(actual, state) and equal(actual_optimizer, optimizer), "model/Adam restore differs")
++    require(diagnostic_equal(actual, state) and diagnostic_equal(actual_optimizer, optimizer), "model/Adam restore differs")
+ 
+ def runtime_binding():
+     cuda = []
+@@ -422,7 +437,9 @@
+         require(stop_iteration is not None, "comparison branch must declare exact stop")
+         needed = set(range(next_iteration, stop_iteration + 1))
+     else:
+-        needed = set(range(1, max(light) + 1))
++        require(next_iteration == 1 and stop_iteration in (8, 15101), "only registered fresh B endpoint")
++        project_a_reference.validate_projected_records(records)
++        return
+     require(bool(needed) and needed <= light and needed <= full,
+             "incomplete reference step/digest coverage")
+ 
+@@ -436,6 +453,7 @@
+     parser.add_argument("--exact_reference_trace")
+     parser.add_argument("--exact_continue_gate")
+     parser.add_argument("--exact_reference_terminal")
++    parser.add_argument("--exact_prefix_spec")
+ 
+ class Controller:
+     def __init__(self, args, local):
+@@ -443,6 +461,7 @@
+         self.args = args
+         self.gate = None
+         self.gate_contract = None
++        self.prefix_gate = None
+         require(args.iterations == 30000, "optimization horizon must remain 30000")
+         for key in ("use_color_correction", "use_appearance_embedding", "use_transient_model"):
+             require(not getattr(args, key), "unsupported auxiliary model " + key)
+@@ -462,6 +481,8 @@
+         for path, digest in manifest["files"].items():
+             require(file_sha(path) == digest, "bound file changed: " + path)
+         require(str(Path(__file__).resolve()) in manifest["files"], "unbound continuation module")
++        require(str(Path(diagnostic_cpu.__file__).resolve()) in manifest["files"], "unbound diagnostic helper")
++        require(str(Path(project_a_reference.__file__).resolve()) in manifest["files"], "unbound A projection helper")
+         require(str(Path(sys.argv[0]).resolve()) in manifest["files"], "unbound instrumented trainer")
+         require(manifest["science_args"] == {k: v for k, v in vars(args).items() if k not in CONTROL_ARGS},
+                 "parsed science arguments differ from independently frozen manifest")
+@@ -508,6 +529,7 @@
+         self.reference = {}
+         reference_path = getattr(args, "exact_reference_trace", None)
+         if reference_path:
++            require(str(Path(reference_path).resolve()) in manifest["files"], "unbound comparison reference")
+             for line in Path(reference_path).read_text().splitlines():
+                 record = json.loads(line)
+                 key = (record["iteration"], "exact_digest" in record)
+@@ -518,6 +540,17 @@
+             if self.gate_contract is not None:
+                 from continuation_gate import ComparisonGate
+                 self.gate = ComparisonGate(self.reference)
++        prefix_spec = getattr(args, "exact_prefix_spec", None)
++        if prefix_spec:
++            require(not self.has_resume and args.exact_stop == 15101 and
++                    args.exact_save == [8, 14999, 15101] and not args.exact_windows and self.reference,
++                    "only fresh B8 conditional15101 is registered")
++            from native_b_prefix_launcher import load_controller_spec
++            from prefix_gate import PrefixGate
++            self.prefix_spec, self.prefix_owner = load_controller_spec(prefix_spec, args.exact_manifest, self.root.parent)
++            self.prefix_gate = PrefixGate(self.reference, self.prefix_spec["promotion_policy"])
++        elif not self.has_resume and self.reference and args.exact_stop == 15101:
++            raise RuntimeError("exact-resume: fresh15101 reference requires measured B8 promotion gate")
+         self.trace = (self.root / ("trace_from_%d.jsonl" %
+                       (self.state["next_iteration"] if self.has_resume else 1))).open("x")
+         self.performance = (self.root / "performance.jsonl").open("x")
+@@ -536,6 +569,7 @@
+             raise RuntimeError("exact-resume: first comparison difference at step " + str(key[0]))
+ 
+     def metric(self, value):
++        value["diagnostic_phases"] = drain_records()
+         value.update(wall_seconds=time.monotonic() - self.started,
+                      peak_host_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                      peak_gpu_allocated_bytes=torch.cuda.max_memory_allocated(0) if torch.cuda.is_available() else 0)
+@@ -551,11 +585,11 @@
+             # Camera reconstruction is verified bitwise; caches below restore saved values.
+             for key in ("chart_cameras", "dense_cameras", "scene_extent",
+                         "rgb_mask_lookup", "geometry_mask_lookup"):
+-                require(equal(static[key], self.static[key]), "rebuilt static input differs: " + key)
++                require(diagnostic_equal(static[key], self.static[key]), "rebuilt static input differs: " + key)
+             self.static_ref = self.state["static_ref"]
+-            self.static_digest = semantic_digest(self.static)
++            self.static_digest = diagnostic_digest(self.static)
+             require(self.static_digest == self.state["static_digest"], "static checkpoint digest differs")
+-            self.restored_expected_digest = semantic_digest({k: self.state[k] for k in COMPARISON_FIELDS})
++            self.restored_expected_digest = diagnostic_digest({k: self.state[k] for k in COMPARISON_FIELDS})
+             restore_model(local["gaussians"], self.state["model"], self.state["optimizer"], local["opt"])
+             require(vars(local["pipe"]) == self.state["pipeline"], "pipeline/debug changed")
+             next_lr = next_lrs(local["gaussians"], self.state["next_iteration"])
+@@ -571,7 +605,7 @@
+             return restore
+         before = rng_state()
+         self.static = static
+-        self.static_digest = semantic_digest(static)
++        self.static_digest = diagnostic_digest(static)
+         static_started = time.monotonic()
+         self.static_ref = atomic_save(self.root / "static", static)
+         self.metric({"event": "fresh_setup", "static_tensor_bytes": tensor_bytes(static),
+@@ -593,14 +627,14 @@
+             return
+         before = rng_state()
+         model, optimizer = capture_model(local["gaussians"])
+-        cache_digest = semantic_digest(snapshot_static(local))
++        cache_digest = diagnostic_digest(snapshot_static(local))
+         require(cache_digest == self.static_digest, "actual restored cache differs")
+         comparison = {"model": model, "optimizer": optimizer,
+             "loop": {k: copy.deepcopy(local[k]) for k in LOOP_FIELDS}, "rng": before,
+             "events": copy.deepcopy(self.events), "pipeline": copy.deepcopy(vars(local["pipe"])),
+             "scheduler_next": next_lrs(local["gaussians"], local["first_iter"]),
+             "static_digest": cache_digest}
+-        digest = semantic_digest(comparison)
++        digest = diagnostic_digest(comparison)
+         require(digest == self.restored_expected_digest, "restored boundary full state differs")
+         if self.gate is not None:
+             self.check_reference({"iteration": 14999, "exact_digest": digest}, (14999, True))
+@@ -608,6 +642,8 @@
+         require(equal(before, rng_state()), "restored verification consumed RNG")
+ 
+     def before_step(self, iteration):
++        if self.prefix_gate is not None:
++            self.prefix_gate.before_step(iteration)
+         if self.gate is not None:
+             self.gate.before_step(iteration)
+ 
+@@ -648,7 +684,7 @@
+             synchronize()
+             before = rng_state()
+             model, optimizer = capture_model(local["gaussians"])
+-            cache_digest = semantic_digest(snapshot_static(local))
++            cache_digest = diagnostic_digest(snapshot_static(local))
+             require(cache_digest == self.static_digest, "actual static cache changed")
+             state = {"schema": SCHEMA, "phase": PHASE, "completed_iteration": k,
+                      "next_iteration": k + 1, "binding": self.binding,
+@@ -659,7 +695,7 @@
+                      "scheduler_next": next_lrs(local["gaussians"], k + 1)}
+             validate_checkpoint(state, self.binding, self.static)
+             comparison = {key: state[key] for key in COMPARISON_FIELDS}
+-            digest_record = {"iteration": k, "exact_digest": semantic_digest(comparison)}
++            digest_record = {"iteration": k, "exact_digest": diagnostic_digest(comparison)}
+             self.check_reference(digest_record, (k, True))
+             self.trace.write(json.dumps(digest_record) + "\n")
+             self.trace.flush()
+@@ -676,6 +712,21 @@
+                          "capture_hash_seconds": capture_seconds, "publication_seconds": save_seconds,
+                          "checkpoint_file_bytes": disk_bytes})
+             require(equal(before, rng_state()), "checkpoint capture consumed RNG")
++        if self.prefix_gate is not None and k <= 8:
++            self.prefix_gate.observe(record, digest_record["exact_digest"] if digest_record else None)
++            if k == 8:
++                proof = {"spec_sha256": file_sha(self.args.exact_prefix_spec),
++                         "binding_sha256": file_sha(self.args.exact_manifest),
++                         "reference_trace_sha256": file_sha(self.args.exact_reference_trace),
++                         "checkpoint8_manifest_sha256": file_sha(self.root / "step_00008/manifest.json"),
++                         "full8_digest": digest_record["exact_digest"]}
++                passed = self.prefix_gate.decide(time.monotonic() - self.prefix_owner["started_monotonic"],
++                    capture_seconds, save_seconds, self.root / "B8_conditional_prefix_gate.json", proof)
++                if not passed:
++                    self.metric({"event": "stop", "iteration": 8, "reason": "measured_budget_gate"})
++                    self.trace.close()
++                    self.performance.close()
++                    return True
+         if self.gate is not None and k <= 15101:
+             self.gate.observe(k, record, digest_record["exact_digest"] if digest_record else None)
+             if k == 15101:
+--- v1/freeze_binding.py
++++ v2/freeze_binding.py
+@@ -52,6 +52,7 @@
+     parser.add_argument("--training-plan", required=True, type=Path)
+     parser.add_argument("--input-review", required=True, type=Path)
+     parser.add_argument("--output", required=True, type=Path)
++    parser.add_argument("--additional-evidence", nargs="*", type=Path, default=[])
+     a = parser.parse_args()
+     assert not a.output.exists(), "refusing binding overwrite"
+     plan = json.loads(a.training_plan.read_text())
+@@ -70,7 +71,11 @@
+                  ROOT / "train_with_charts_exact.py", ROOT / "build_trainer.py",
+                  ROOT / "freeze_binding.py", ROOT / "build_observer.py",
+                  ROOT / "train_with_charts_observer.py", ROOT / "continuation_gate.py",
+-                 ROOT / "native_n8_launcher.py"):
++                 ROOT / "native_n8_launcher.py", ROOT / "diagnostic_cpu.py", ROOT / "project_a_reference.py",
++                 ROOT / "native_b_prefix_launcher.py", ROOT / "prefix_gate.py"):
++        add_bound_file(files, str(path.resolve()), sha(path))
++    for path in a.additional_evidence:
++        assert path.is_absolute() and path.is_file(), "missing absolute additional evidence"
+         add_bound_file(files, str(path.resolve()), sha(path))
+     # Bind the original code tree and local compiled CUDA operators actually used.
+     for folder in (PRODUCER / "2d-gaussian-splatting", PRODUCER / "matcha", PRODUCER / "Depth-Anything-V2/depth_anything_v2"):
+--- v1/native_n8_launcher.py
++++ v2/native_n8_launcher.py
+@@ -24,7 +24,7 @@
+ PYTHON = "/root/miniconda3/envs/cybersim_agent/bin/python"
+ REQUIRED_FILES = ("native_n8_launcher.py", "exact_resume.py", "continuation_gate.py",
+                   "train_with_charts_observer.py", "train_with_charts_exact.py",
+-                  "freeze_binding.py")
++                  "freeze_binding.py", "diagnostic_cpu.py", "project_a_reference.py")
+ REFS = ("training_plan", "binding", "input_review", "source_review")
+ STOP_REQUESTED = None
+ TERMINATION_SIGNALS = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGALRM}
+@@ -98,7 +98,9 @@
+         require(sha(item["path"], deadline) == item["sha256"], "changed reference: " + item["path"])
+     for path, expected in spec["frozen_files"].items():
+         require(sha(path, deadline) == expected, "changed execution source: " + path)
+-    docs = {key: json.loads(Path(value["path"]).read_text()) for key, value in spec["references"].items()}
++    # B adds a separately validated JSONL trajectory; never parse it as one JSON document.
++    docs = {key: json.loads(Path(value["path"]).read_text()) for key, value in spec["references"].items()
++            if key != "a_reference"}
+     review = docs["source_review"]
+     require(review["schema"] == "matcha_exact_launcher_review_v1" and review["verdict"] == "PASS" and
+             review["frozen_files"] == spec["frozen_files"] and
+--- v1/run_cpu_checks.py
++++ v2/run_cpu_checks.py
+@@ -6,10 +6,14 @@
+ import unittest
+ import test_cpu_contracts
+ import test_launcher_cpu
++import test_diagnostic_cpu
++import test_projection_cpu
++import test_prefix_gate_cpu
++import test_b_launcher_cpu
+ import torch
+ root = Path(__file__).resolve().parent
+ suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromModule(module)
+-                           for module in (test_cpu_contracts, test_launcher_cpu))
++                           for module in (test_cpu_contracts, test_launcher_cpu, test_diagnostic_cpu, test_projection_cpu, test_prefix_gate_cpu, test_b_launcher_cpu))
+ start = time.perf_counter()
+ result = unittest.TextTestRunner(verbosity=2).run(suite)
+ report = {
+--- v1/test_cpu_contracts.py
++++ v2/test_cpu_contracts.py
+@@ -261,7 +261,9 @@
+                 dense_data_path="cpu_fixture", dense_regul="default", exact_stop=16,
+                 exact_save=[], exact_windows=["16:17"], exact_dir=str(root / "baseline"),
+                 exact_resume=None, exact_manifest=str(root / "binding.json"), model_path="output")
+-            source_files = {str(Path(er.__file__).resolve()): er.file_sha(er.__file__),
++            source_files = {str(Path(er.project_a_reference.__file__).resolve()): er.file_sha(er.project_a_reference.__file__),
++                            str(Path(er.diagnostic_cpu.__file__).resolve()): er.file_sha(er.diagnostic_cpu.__file__),
++                            str(Path(er.__file__).resolve()): er.file_sha(er.__file__),
+                             str(Path(__file__).resolve()): er.file_sha(__file__)}
+             source_files[str(Path(sys.argv[0]).resolve())] = er.file_sha(sys.argv[0])
+             manifest = {"schema": "matcha_exact_binding_v1", "files": source_files,

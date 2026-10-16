@@ -1,0 +1,29 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Complete Full and Compact prior metrics}
+\label{tab:s_prior_tails}
+\begin{tabular}{lcccccc}
+\toprule
+Configuration & \shortstack{Median TE / RE\\(cm / deg)} & Mean TE & P90 TE & P95 TE & R5 (\%) & R15 (\%) \\
+\midrule
+Vanilla 3DGS / Full & \textbf{7.817} / \textbf{0.117} & \textbf{21.124} & \textbf{29.887} & \textbf{43.907} & \textbf{46.95} & \textbf{74.54} \\
+Vanilla 3DGS / Compact & \textbf{8.537} / \textbf{0.121} & \textbf{19.740} & \textbf{30.135} & \textbf{45.691} & \textbf{44.25} & \textbf{73.12} \\
+Vanilla 2DGS / Full & 8.638 / 0.122 & 64.665 & 33.907 & 55.102 & 42.35 & 71.53 \\
+Vanilla 2DGS / Compact & 8.922 / 0.127 & 66.919 & 32.378 & 53.169 & 39.95 & 69.29 \\
+i3DGS raw / Full & 22.537 / 0.385 & 118.313 & 143.956 & 559.864 & 11.18 & 37.78 \\
+i3DGS raw / Compact & 22.904 / 0.384 & 117.688 & 143.035 & 558.791 & 11.77 & 36.78 \\
+i3DGS +1k / Full & 10.396 / 0.170 & 42.509 & 42.951 & 65.345 & 30.39 & 67.17 \\
+i3DGS +1k / Compact & 10.858 / 0.175 & 47.030 & 45.380 & 69.938 & 30.29 & 65.91 \\
+Long-LRM raw / Full & 433.693 / 6.892 & 1629.119 & 4170.935 & 6335.304 & 11.56 & 27.14 \\
+Long-LRM raw / Compact & 483.413 / 7.344 & 1574.188 & 4021.886 & 5786.255 & 11.25 & 26.98 \\
+Long-LRM +1k / Full & 147.731 / 2.963 & 827.429 & 2276.512 & 2836.595 & 24.11 & 45.69 \\
+Long-LRM +1k / Compact & 147.566 / 3.178 & 824.877 & 2202.639 & 2763.555 & 22.50 & 44.46 \\
+MAtCha / Full & 8.365 / 0.126 & 52.669 & 35.591 & 56.547 & 43.42 & 71.67 \\
+MAtCha / Compact & 8.844 / 0.132 & 89.979 & 37.897 & 61.009 & 42.07 & 70.30 \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize All 14 prior/mode combinations are shown. TE statistics are in cm. Large errors are retained. Bold compares priors separately within Full and within Compact.\end{minipage}
+\end{table*}

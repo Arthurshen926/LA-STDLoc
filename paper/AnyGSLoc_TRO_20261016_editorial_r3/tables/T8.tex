@@ -1,0 +1,21 @@
+\begin{table}[!t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{1.7pt}
+\renewcommand{\arraystretch}{1.15}
+\caption{Compact maps from different Gaussian models}\label{tab:t8}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Gaussian model & \shortstack{PSNR\\(dB)} & \shortstack{Med. TE/RE\\(cm/deg)} & R5 (\%) & \shortstack{Map\\(MB)} \\
+\midrule
+Vanilla 3DGS & \textbf{16.72} & \textbf{8.537}/\textbf{0.121} & \textbf{44.25} & \textbf{126.73} \\
+MAtCha & 15.46 & \underline{8.844}/0.132 & \underline{42.07} & \underline{196.28} \\
+Vanilla 2DGS & \underline{15.70} & 8.922/\underline{0.127} & 39.95 & 196.84 \\
+i3DGS raw & 13.66 & 22.904/0.384 & 11.77 & 351.27 \\
+i3DGS post-opt. & 15.14 & 10.858/0.175 & 30.29 & 244.58 \\
+Long-LRM raw & 13.56 & 483.413/7.344 & 11.25 & 315.00 \\
+Long-LRM post-opt. & 15.34 & 147.566/3.178 & 22.50 & 261.27 \\
+\bottomrule
+\end{tabular*}
+\tabnote{PSNR uses mapping views. Post-opt.: 1,000 upstream updates. All input models use the same downstream pipeline with natural map sizes; native reconstruction settings differ. Bold/underline: best/second-best.}
+\end{table}

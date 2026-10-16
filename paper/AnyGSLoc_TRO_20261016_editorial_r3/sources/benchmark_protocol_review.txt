@@ -1,0 +1,48 @@
+BENCHMARK PROTOCOL SPOT CHECK — 2026-10-09 r3
+Read-only review of primary paper methodology. No new experiment was run.
+
+ULF-Loc (https://arxiv.org/html/2605.04730v1, Sec. 4.1):
+  7Scenes and 12Scenes use SfM pseudo-GT poses from Brachmann et al. (ICCV 2021);
+  Cambridge uses Cambridge dataset GT. Their tables are literature comparisons.
+  The relevant baseline 12Scenes appendix reports PNeRFLoc with Office 2 5a
+  unreported, 11 other numerical cells, and published mean 2.8 / 1.08.
+  Its generic caption says "mean over all 12 scenes"; for that one partial row,
+  the displayed 11-cell average matches the reported mean to shown precision.
+  Our T3 flags the partial coverage instead of silently calling it all 12.
+
+SplitGS-Loc (https://arxiv.org/html/2605.07351v1, Sec. 4.1):
+  Uses SfM-based pose annotations from Brachmann et al. (ICCV 2021) for
+  7Scenes; evaluates five Cambridge scenes. SplitGS-Loc+ is a distinct
+  iterative pose refinement configuration and remains a distinct table row.
+  This paper does not report 12Scenes in the cited comparison.
+
+GSVisLoc (https://arxiv.org/html/2508.18242v1, Sec. 4.1, Tables 1–2):
+  7Scenes results use SfM annotations and original train/test split.
+  Cambridge reports only King's College, Old Hospital, Shop Facade,
+  St Mary's Church (four scenes; excludes Great Court).
+  Our Cambridge table retains the four-scene mean marker.
+
+STDLoc (https://arxiv.org/html/2503.19358v1, Sec. 4):
+  Original reported Cambridge and 7Scenes rows were transcribed from STDLoc.
+  STDLoc explicitly evaluates five Cambridge scenes and seven indoor scenes.
+  We did not independently establish every underlying published competitor's
+  exact pose-file version from STDLoc's table. Avoid claiming all 24/26/16
+  published baselines share identical inputs/poses/training budgets.
+
+On the Limits of Pseudo Ground Truth (Brachmann et al., ICCV 2021):
+  https://github.com/tsattler/visloc_pseudo_gt_limitations
+  Provides alternative SfM pGT for 7Scenes/12Scenes; poses under different
+  references can change numerical rankings.
+
+12Scenes PNeRFLoc missing-value cross-check:
+  ULF-Loc Table A reproduces 11 per-scene entries and 2.8 / 1.08 mean.
+  A separate SplatLoc study reports PNeRFLoc failed Office 2 5a
+  (https://scispace.com/pdf/splatloc-3d-gaussian-splatting-based-visual-localization-for-tak5ch8emddh.pdf).
+  The 11-scene interpretation is supported by displayed arithmetic, not a
+  newly recomputed unrounded published metric. T3 flags the coverage mismatch.
+
+Conclusion for the paper:
+  Published benchmark tables (T1–T3) provide literature context under the
+  reported methods and scene coverage. T4 remains the controlled local
+  comparison with explicit mask/stage/native-cost settings. Do not call all
+  literature numbers same-hardware or same-prior local reruns.

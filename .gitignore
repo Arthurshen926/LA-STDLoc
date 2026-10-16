@@ -193,3 +193,46 @@ wandb/
 
 # Recoverable local build artifacts moved during repository migration.
 /research/build_artifacts/
+
+# Publication workspace: keep historical drafts and local artifacts on disk.
+# Only the current editorial source is eligible for version control.
+/paper/*
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/*
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/README.md
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/build.sh
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/main.tex
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/preamble.tex
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/*.bib
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/*.cls
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/*.bst
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/figures/
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/sections/
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/tables/
+!/paper/AnyGSLoc_TRO_20261016_editorial_r3/sources/
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/sections/supplement_*.tex
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/__pycache__/
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.py[cod]
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.zip
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.b64
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.aux
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.log
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.fls
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.fdb_latexmk
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.out
+/paper/AnyGSLoc_TRO_20261016_editorial_r3/**/*.blg
+
+# Server-specific bindings, packaged exports, scratch evidence and editor state.
+/release/local/
+/release/dist/
+/artifacts/
+/.vscode/
+
+# One-off server-bound migration tools; preserve locally, do not rerun on release.
+/release/maintainer/archive_conda_environment.py
+/release/maintainer/build_archives.py
+/release/maintainer/collect_figures.py
+/release/maintainer/collect_paper.py
+/release/maintainer/collect_qualitative.py
+/release/maintainer/sanitize_records.py
+/release/maintainer/verify_distribution.py

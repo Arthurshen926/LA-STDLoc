@@ -1,0 +1,21 @@
+\begin{table*}[tp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\caption{Matched query-core and complete-frame latency}
+\label{tab:s_timing}
+\begin{tabular}{lcccccccc}
+\toprule
+Configuration & Core mean & p50 & P90 & P95 & Frame mean & p50 & P90 & P95 \\
+\midrule
+STDLoc\_off & 583.101 & 416.325 & 1256.923 & 1412.536 & 789.051 & 640.440 & 1423.522 & 1707.632 \\
+STDLoc\_on & 518.012 & 408.637 & 1173.683 & 1325.507 & 724.977 & 613.703 & 1378.414 & 1513.549 \\
+ULFLoc\_off & 1515.196 & 1465.322 & 2245.286 & 2435.227 & 1692.281 & 1620.878 & 2417.727 & 2722.494 \\
+ULFLoc\_on & 1574.003 & 1516.796 & 2314.186 & 2577.043 & 1764.819 & 1679.643 & 2517.317 & 2841.447 \\
+AnyGSLoc\_full & 77.215 & 49.031 & 205.944 & \textbf{242.680} & \textbf{195.904} & 135.675 & 384.722 & 451.218 \\
+AnyGSLoc\_compact & \textbf{74.188} & \textbf{43.727} & \textbf{200.119} & 251.494 & 198.945 & \textbf{134.881} & \textbf{381.769} & \textbf{436.476} \\
+\bottomrule
+\end{tabular}
+\par\smallskip\begin{minipage}{0.98\linewidth}\footnotesize All entries are ms. Each configuration has 1,500 measured queries (five scenes, three fresh processes, 100 queries per process). Means are scene-equal; percentiles pool the 1,500 measured observations. Warm-ups are excluded. Frame includes fresh RGB decoding, camera materialization, preprocessing, and mask work. Precomputed-mask network generation is excluded, not assigned zero cost. Native core retains feature/solver budgets and ULF-Loc diagnostics. Bold marks the smallest value in each column across complete configurations.\end{minipage}
+\end{table*}
